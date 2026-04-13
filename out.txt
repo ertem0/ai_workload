@@ -1,0 +1,467 @@
+============================================================================================
+AIMC Hardware Profiling Report
+============================================================================================
+Model                         : google/mobilebert-uncased
+Device                        : CPU
+Dummy sentence                : Analog in-memory computing accelerators benefit from dense matrix operations, but they still need digital support for control-heavy steps.
+Tokenized sequence length     : 27
+Dense layers profiled         : 361
+Activation layers probed      : 96
+Wrapped functional activations: 0
+--------------------------------------------------------------------------------------------
+1. System-Level Arithmetic Intensity
+   Total MACs / Total memory footprint = 551,245,824 / 97.83 MiB
+   Parameter bytes            : 93.77 MiB
+   Intermediate activation bytes: 4.06 MiB
+   System arithmetic intensity: 5.3735 MACs/byte
+--------------------------------------------------------------------------------------------
+2. Crossbar-Level Arithmetic Intensity (Predicted)
+   Mean over all Linear/Dense layers of MACs / (input bytes + output bytes + weight bytes)
+   Average dense-layer AI     : 5.2249 MACs/byte
+--------------------------------------------------------------------------------------------
+3. Crossbar Tiling Efficiency & Footprint
+   Tile size                  : 128 x 128
+   Total crossbar tiles       : 1,236
+   Provisioned cells          : 20,250,624
+   Used weight cells          : 20,250,624
+   Wasted padded cells        : 0
+   Tiling efficiency          : 100.00%
+--------------------------------------------------------------------------------------------
+4. Linear vs. Non-Linear Operation Ratio
+   Linear/Dense MACs          : 546,766,848
+   Non-linear/digital MACs    : 4,478,976
+   Linear share               : 99.19%
+   Non-linear share           : 0.81%
+--------------------------------------------------------------------------------------------
+5. Static vs. Dynamic Tensor Operations Ratio
+   Static MACs use fixed trained weights. Dynamic MACs come from tensor-to-tensor products such as attention.
+   Static-weight MACs         : 546,766,848
+   Dynamic tensor MACs        : 4,478,976
+   Static share               : 99.19%
+   Dynamic share              : 0.81%
+--------------------------------------------------------------------------------------------
+Identified Static Weight Matrices
+   These matrices are fixed after training and are natural AIMC crossbar candidates.
+   [STATIC] embeddings.embedding_transformation | role=dense projection | shape=(512, 384) | bytes=768.00 KiB | tiles=12 | tile_eff=100.00%
+   [STATIC] encoder.layer.0.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.0.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.0.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.0.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.0.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.0.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.0.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.0.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.0.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.0.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.0.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.0.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.0.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.1.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.1.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.1.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.1.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.1.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.1.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.1.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.1.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.1.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.1.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.1.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.1.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.1.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.2.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.2.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.2.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.2.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.2.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.2.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.2.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.2.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.2.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.2.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.2.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.2.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.2.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.3.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.3.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.3.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.3.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.3.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.3.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.3.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.3.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.3.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.3.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.3.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.3.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.3.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.3.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.3.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.4.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.4.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.4.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.4.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.4.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.4.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.4.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.4.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.4.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.4.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.4.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.4.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.4.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.4.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.4.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.5.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.5.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.5.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.5.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.5.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.5.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.5.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.5.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.5.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.5.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.5.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.5.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.5.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.5.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.5.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.6.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.6.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.6.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.6.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.6.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.6.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.6.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.6.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.6.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.6.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.6.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.6.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.6.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.6.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.6.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.7.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.7.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.7.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.7.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.7.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.7.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.7.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.7.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.7.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.7.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.7.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.7.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.7.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.7.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.7.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.8.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.8.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.8.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.8.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.8.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.8.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.8.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.8.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.8.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.8.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.8.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.8.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.8.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.8.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.8.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.9.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.9.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.9.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.9.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.9.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.9.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.9.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.9.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.9.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.9.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.9.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.9.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.9.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.9.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.9.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.10.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.10.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.10.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.10.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.10.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.10.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.10.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.10.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.10.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.10.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.10.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.10.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.10.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.10.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.10.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.11.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.11.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.11.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.11.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.11.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.11.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.11.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.11.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.11.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.11.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.11.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.11.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.11.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.11.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.11.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.12.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.12.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.12.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.12.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.12.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.12.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.12.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.12.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.12.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.12.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.12.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.12.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.12.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.12.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.12.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.13.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.13.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.13.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.13.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.13.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.13.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.13.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.13.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.13.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.13.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.13.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.13.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.13.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.13.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.13.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.14.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.14.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.14.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.14.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.14.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.14.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.14.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.14.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.14.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.14.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.14.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.14.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.14.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.14.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.14.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.15.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.15.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.15.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.15.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.15.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.15.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.15.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.15.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.15.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.15.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.15.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.15.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.15.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.15.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.15.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.16.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.16.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.16.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.16.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.16.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.16.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.16.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.16.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.16.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.16.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.16.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.16.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.16.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.16.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.16.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.17.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.17.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.17.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.17.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.17.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.17.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.17.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.17.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.17.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.17.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.17.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.17.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.17.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.17.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.17.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.18.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.18.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.18.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.18.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.18.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.18.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.18.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.18.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.18.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.18.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.18.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.18.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.18.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.18.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.18.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.19.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.19.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.19.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.19.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.19.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.19.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.19.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.19.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.19.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.19.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.19.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.19.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.19.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.19.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.19.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.20.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.20.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.20.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.20.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.20.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.20.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.20.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.20.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.20.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.20.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.20.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.20.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.20.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.20.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.20.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.21.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.21.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.21.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.21.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.21.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.21.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.21.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.21.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.21.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.21.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.21.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.21.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.21.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.21.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.21.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.22.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.22.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.22.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.22.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.22.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.22.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.22.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.22.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.22.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.22.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.22.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.22.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.22.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.22.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.22.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.23.attention.self.query | role=attention query projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.23.attention.self.key | role=attention key projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.23.attention.self.value | role=attention value projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.23.attention.output.dense | role=attention output projection | shape=(128, 128) | bytes=64.00 KiB | tiles=1 | tile_eff=100.00%
+   [STATIC] encoder.layer.23.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.23.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.23.output.bottleneck.dense | role=feed-forward contraction | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.23.bottleneck.input.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.23.bottleneck.attention.dense | role=bottleneck projection | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.23.ffn.0.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.23.ffn.0.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.23.ffn.1.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.23.ffn.1.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.23.ffn.2.intermediate.dense | role=feed-forward expansion | shape=(512, 128) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+   [STATIC] encoder.layer.23.ffn.2.output.dense | role=feed-forward contraction | shape=(128, 512) | bytes=256.00 KiB | tiles=4 | tile_eff=100.00%
+--------------------------------------------------------------------------------------------
+Identified Dynamic Tensor Products
+   These matrices are formed at runtime from activations, so they require digital support.
+   [DYNAMIC] encoder.layer.0.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.0.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.1.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.1.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.2.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.2.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.3.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.3.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.4.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.4.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.5.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.5.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.6.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.6.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.7.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.7.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.8.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.8.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.9.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.9.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.10.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.10.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.11.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.11.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.12.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.12.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.13.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.13.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.14.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.14.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.15.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.15.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.16.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.16.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.17.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.17.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.18.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.18.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.19.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.19.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.20.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.20.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.21.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.21.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.22.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.22.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+   [DYNAMIC] encoder.layer.23.attention.self | op=Q x K^T | role=attention score matrix | lhs=(1, 4, 27, 32) | rhs=(1, 4, 32, 27) | out=(1, 4, 27, 27) | MACs=93,312
+   [DYNAMIC] encoder.layer.23.attention.self | op=Attention x V | role=attention context mixing | lhs=(1, 4, 27, 27) | rhs=(1, 4, 27, 32) | out=(1, 4, 27, 32) | MACs=93,312
+--------------------------------------------------------------------------------------------
+6. Dynamic Activation Sparsity
+   Exact fraction of activation outputs that are numerically equal to 0.0 after hookable activation layers.
+   Exact zero sparsity        : 91.43%
+--------------------------------------------------------------------------------------------
+Operator MAC breakdown from fvcore
+   linear                       546,766,848
+   matmul                       4,478,976
+--------------------------------------------------------------------------------------------
+Unsupported ops suppressed    : aten::rsub (1), aten::mul (194), aten::embedding (3), aten::pad (2), aten::add (363), aten::div (24), aten::softmax (24)
+============================================================================================
