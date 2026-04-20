@@ -1,0 +1,21 @@
+experiment_name: "MiniCPM_CWS_Profile"
+model:
+  id: "openbmb/MiniCPM-MoE-8x2B"
+  top_k: 2 # The default. You can sweep 1, 2, 4, 8.
+  precision: "fp16"
+  prefer_safetensors: true # Fail fast on repos that only publish legacy .bin weights.
+
+dataset:
+  - "Solve this math word problem step by step: A train travels 240 kilometers in 3 hours, stops for 30 minutes, and then travels another 180 kilometers in 2 hours. What is the average speed across the whole trip including the stop?"
+  - "Write a Python function that merges two sorted lists without using the built-in sort function. Include type hints and explain the algorithmic complexity."
+  - "Explain in a few sentences why the fall of the Western Roman Empire had long-term political consequences for medieval Europe."
+
+metrics:
+  calculate_cws: true
+  calculate_system_arithmetic_intensity: true
+  calculate_crossbar_arithmetic_intensity: true
+  calculate_tiling_efficiency: true
+  calculate_linear_vs_nonlinear_ratio: true
+  calculate_static_vs_dynamic_ratio: true
+  calculate_activation_sparsity: true
+  crossbar_dimensions: [128, 128]
