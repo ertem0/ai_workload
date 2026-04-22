@@ -42,6 +42,31 @@ def load_yaml_config(config_path: Path) -> dict[str, Any]:
         return yaml.safe_load(handle)
 
 
+def set_trackers_enabled(
+    cws_tracker: CWSTracker | None,
+    aimc_runtime_tracker: AIMCMetricTracker | None,
+    enabled: bool,
+) -> None:
+    if cws_tracker is not None:
+        cws_tracker.set_enabled(enabled)
+    if aimc_runtime_tracker is not None:
+        aimc_runtime_tracker.set_enabled(enabled)
+
+
+def print_inference_outputs(outputs: list[dict[str, str]]) -> None:
+    if not outputs:
+        return
+
+    print("=" * 96)
+    print("Inference Outputs")
+    print("=" * 96)
+    for item in outputs:
+        print(f"Prompt {item['prompt_index']}")
+        print(f"Input : {item['prompt']}")
+        print(f"Output: {item['continuation'] or item['decoded_text']}")
+        print("-" * 96)
+
+
 def main() -> None:
     args = parse_args()
     config_path = Path(args.config).resolve()
@@ -85,7 +110,10 @@ def main() -> None:
         print_tiling_report(tiling_metrics)
 
     prompts = config_dict["dataset"]
+    inference_cfg = config_dict.get("inference", {})
+    max_new_tokens = int(inference_cfg.get("max_new_tokens", 64))
     total_input_tokens = 0
+    inference_outputs: list[dict[str, str]] = []
     log_step(f"Running {len(prompts)} prompts.")
 
     try:
@@ -120,14 +148,41 @@ def main() -> None:
                 # Disable forward-hook accounting during the auxiliary fvcore trace
                 # so routing counts and runtime hook metrics are not double counted.
                 log_step(f"Starting fvcore MAC analysis for prompt {prompt_index}/{len(prompts)}.")
-                aimc_runtime_tracker.set_enabled(False)
-                if cws_tracker is not None:
-                    cws_tracker.set_enabled(False)
+                set_trackers_enabled(cws_tracker, aimc_runtime_tracker, False)
                 aimc_runtime_tracker.analyze_flops_for_prompt(encoded)
-                aimc_runtime_tracker.set_enabled(True)
-                if cws_tracker is not None:
-                    cws_tracker.set_enabled(True)
+                set_trackers_enabled(cws_tracker, aimc_runtime_tracker, True)
                 log_step(f"Completed fvcore MAC analysis for prompt {prompt_index}/{len(prompts)}.")
+
+            log_step(
+                f"Generating decoded output for prompt {prompt_index}/{len(prompts)} "
+                f"(max_new_tokens={max_new_tokens})."
+            )
+            set_trackers_enabled(cws_tracker, aimc_runtime_tracker, False)
+            with torch.inference_mode():
+                generated = model.generate(
+                    **encoded,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=False,
+                    pad_token_id=tokenizer.pad_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                )
+            set_trackers_enabled(cws_tracker, aimc_runtime_tracker, True)
+
+            input_length = int(encoded["input_ids"].shape[-1])
+            decoded_text = tokenizer.decode(generated[0], skip_special_tokens=True)
+            continuation = tokenizer.decode(
+                generated[0][input_length:],
+                skip_special_tokens=True,
+            ).strip()
+            inference_outputs.append(
+                {
+                    "prompt_index": str(prompt_index),
+                    "prompt": prompt,
+                    "decoded_text": decoded_text.strip(),
+                    "continuation": continuation,
+                }
+            )
+            log_step(f"Captured generated output for prompt {prompt_index}/{len(prompts)}.")
     finally:
         if cws_tracker is not None:
             cws_tracker.remove_hooks()
@@ -149,6 +204,8 @@ def main() -> None:
     if aimc_runtime_tracker is not None:
         log_step("Printing AIMC runtime report.")
         aimc_runtime_tracker.print_report()
+    log_step("Printing inference outputs.")
+    print_inference_outputs(inference_outputs)
     log_step("Benchmark run complete.")
 
 
