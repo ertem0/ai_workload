@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import re
 from pathlib import Path
 from typing import Any
@@ -209,33 +208,18 @@ class CWSTracker:
         self.handles.clear()
 
     @staticmethod
-    def _usage_frequency_summary(counts: torch.Tensor) -> list[tuple[int, int]]:
-        """
-        Summarize how many experts were used exactly n times in a layer.
-
-        Example:
-        - if 10 experts were selected 0 times and 5 experts were selected
-          3 times, the summary contains `(0, 10)` and `(3, 5)`.
-        """
-
-        usage_frequencies: dict[int, int] = {}
-        for usage_count in counts.tolist():
-            usage_value = int(usage_count)
-            usage_frequencies[usage_value] = usage_frequencies.get(usage_value, 0) + 1
-        return sorted(usage_frequencies.items(), key=lambda item: item[0])
+    def _layer_sort_key(name: str) -> tuple[int, str]:
+        if name.startswith("layer "):
+            return int(name.split()[-1]), name
+        return 10**9, name
 
     def compute_layer_results(self) -> list[dict[str, Any]]:
         """
         Compute per-layer CWS values from the accumulated expert histograms.
         """
 
-        def sort_key(name: str) -> tuple[int, str]:
-            if name.startswith("layer "):
-                return int(name.split()[-1]), name
-            return 10**9, name
-
         results: list[dict[str, Any]] = []
-        for layer_name in sorted(self.layer_counts.keys(), key=sort_key):
+        for layer_name in sorted(self.layer_counts.keys(), key=self._layer_sort_key):
             counts = self.layer_counts[layer_name].to(torch.float64)
             mean_count = float(counts.mean().item())
             std_count = float(counts.std(unbiased=False).item())
@@ -245,9 +229,6 @@ class CWSTracker:
                 {
                     "layer_name": layer_name,
                     "counts": self.layer_counts[layer_name],
-                    "usage_frequency_summary": self._usage_frequency_summary(
-                        self.layer_counts[layer_name]
-                    ),
                     "cws": cws,
                 }
             )
@@ -255,7 +236,7 @@ class CWSTracker:
 
     def compute_expert_centric_results(self) -> dict[str, Any]:
         """
-        Compute global expert-centric statistics over the flattened token-layer trace.
+        Compute expert-centric statistics over the flattened token-layer trace.
 
         The trace order is conceptually:
         token0-layer0, token0-layer1, ..., token0-layerN,
@@ -264,7 +245,18 @@ class CWSTracker:
         Each trace element is one routing event containing the top-k selected experts.
         """
 
-        grid_side = int(math.ceil(math.sqrt(self.num_routed_experts)))
+        ordered_layer_names = sorted(self.layer_counts.keys(), key=self._layer_sort_key)
+        if ordered_layer_names:
+            layer_expert_matrix = torch.stack(
+                [self.layer_counts[layer_name] for layer_name in ordered_layer_names],
+                dim=0,
+            )
+        else:
+            layer_expert_matrix = torch.zeros(
+                (0, self.num_routed_experts),
+                dtype=torch.long,
+            )
+
         pair_probabilities = self.expert_pair_counts.to(torch.float64)
         if self.total_routing_events > 0:
             pair_probabilities /= float(self.total_routing_events)
@@ -289,41 +281,25 @@ class CWSTracker:
         )
 
         return {
-            "grid_side": grid_side,
-            "global_expert_counts": self.global_expert_counts.clone(),
+            "layer_names": ordered_layer_names,
+            "layer_expert_matrix": layer_expert_matrix.clone(),
             "pair_probability_matrix": pair_probabilities,
             "top_pairs": top_pairs,
             "total_routing_events": self.total_routing_events,
         }
 
-    @staticmethod
-    def _format_heatmap_row(cells: list[str]) -> str:
-        return " | ".join(cells)
-
-    def _print_expert_heatmap(self, counts: torch.Tensor, grid_side: int) -> None:
-        print("Spatial heatmap (absolute expert usage counts)")
-        cell_width = 12
-        cells: list[str] = []
-        for expert_id in range(self.num_routed_experts):
-            cells.append(f"E{expert_id:02d}:{int(counts[expert_id].item()):>6}")
-        while len(cells) < grid_side * grid_side:
-            cells.append(" " * cell_width)
-        for row_start in range(0, len(cells), grid_side):
-            row = cells[row_start : row_start + grid_side]
-            print(f"   {self._format_heatmap_row(row)}")
-
     def _save_expert_heatmap_plot(
         self,
-        counts: torch.Tensor,
-        grid_side: int,
+        layer_expert_matrix: torch.Tensor,
+        layer_names: list[str],
         model_id: str,
     ) -> Path | None:
         """
-        Save a matplotlib heatmap of absolute expert usage counts.
+        Save a matplotlib heatmap of absolute expert usage counts per layer.
 
-        Experts are laid out on an MxM grid, where M = ceil(sqrt(num_experts)).
-        Empty trailing cells are masked so the color scale only reflects real
-        expert tiles.
+        The heatmap uses:
+        - x-axis: routed expert id
+        - y-axis: transformer layer
         """
 
         try:
@@ -338,48 +314,29 @@ class CWSTracker:
             )
             return None
 
+        if layer_expert_matrix.numel() == 0:
+            return None
+
         safe_model_name = re.sub(r"[^a-zA-Z0-9]+", "_", model_id).strip("_").lower()
-        output_path = Path(f"{safe_model_name}_expert_usage_heatmap.png")
+        output_path = Path(f"{safe_model_name}_layer_expert_usage_heatmap.png")
 
-        heatmap = np.full((grid_side, grid_side), np.nan, dtype=float)
-        for expert_id, usage_count in enumerate(counts.tolist()):
-            row_index = expert_id // grid_side
-            col_index = expert_id % grid_side
-            heatmap[row_index, col_index] = float(usage_count)
-
-        masked_heatmap = np.ma.masked_invalid(heatmap)
-        cmap = plt.cm.inferno.copy()
-        cmap.set_bad(color="#f4f4f4")
-
-        figure, axis = plt.subplots(figsize=(1.45 * grid_side, 1.35 * grid_side))
-        image = axis.imshow(masked_heatmap, cmap=cmap, interpolation="nearest")
+        heatmap = layer_expert_matrix.to(torch.float64).numpy()
+        figure_width = max(14.0, 0.26 * self.num_routed_experts)
+        figure_height = max(7.0, 0.42 * len(layer_names))
+        figure, axis = plt.subplots(figsize=(figure_width, figure_height))
+        image = axis.imshow(heatmap, cmap="inferno", interpolation="nearest", aspect="auto")
         colorbar = figure.colorbar(image, ax=axis, fraction=0.046, pad=0.04)
-        colorbar.set_label("Absolute expert usage count", rotation=90)
+        colorbar.set_label("Expert usage count", rotation=90)
 
-        axis.set_title("Expert-Centric Spatial Heatmap", pad=14)
-        axis.set_xlabel("Grid column")
-        axis.set_ylabel("Grid row")
-        axis.set_xticks(range(grid_side))
-        axis.set_yticks(range(grid_side))
-
-        finite_values = masked_heatmap.compressed()
-        text_threshold = float(finite_values.max() * 0.55) if finite_values.size else 0.0
-
-        for expert_id in range(self.num_routed_experts):
-            row_index = expert_id // grid_side
-            col_index = expert_id % grid_side
-            usage_count = int(counts[expert_id].item())
-            text_color = "white" if usage_count >= text_threshold else "black"
-            axis.text(
-                col_index,
-                row_index,
-                f"E{expert_id:02d}\n{usage_count}",
-                ha="center",
-                va="center",
-                fontsize=8,
-                color=text_color,
-                fontweight="semibold",
-            )
+        axis.set_title("Layer-By-Expert Routing Heatmap", pad=14)
+        axis.set_xlabel("Expert id")
+        axis.set_ylabel("Layer")
+        axis.set_xticks(range(self.num_routed_experts))
+        axis.set_xticklabels([str(expert_id) for expert_id in range(self.num_routed_experts)])
+        axis.set_yticks(range(len(layer_names)))
+        axis.set_yticklabels(layer_names)
+        axis.tick_params(axis="x", labelrotation=90, labelsize=7)
+        axis.tick_params(axis="y", labelsize=8)
 
         figure.tight_layout()
         figure.savefig(output_path, dpi=220, bbox_inches="tight")
@@ -443,34 +400,22 @@ class CWSTracker:
         print(f"Input token count            : {input_token_count}")
         print(f"Total expert assignments     : {total_assignments}")
         print("-" * 96)
-        usage_histograms = [
-            ", ".join(
-                f"{usage_count}-{expert_count}exp "
-                for usage_count, expert_count in result["usage_frequency_summary"]
-            )
-            for result in results
-        ]
-        usage_column_width = max(len(histogram) for histogram in usage_histograms)
-        for result, usage_summary in zip(results, usage_histograms):
+        for result in results:
             print(
                 f"{result['layer_name']:<24} "
-                f"usage_hist=[{usage_summary:<{usage_column_width}}] "
                 f"CWS={result['cws']:.6f}"
             )
         print("=" * 96)
         print("Expert-Centric Routing Report")
         print("=" * 96)
         heatmap_path = self._save_expert_heatmap_plot(
-            counts=expert_centric_results["global_expert_counts"],
-            grid_side=expert_centric_results["grid_side"],
+            layer_expert_matrix=expert_centric_results["layer_expert_matrix"],
+            layer_names=expert_centric_results["layer_names"],
             model_id=model_id,
-        )
-        self._print_expert_heatmap(
-            counts=expert_centric_results["global_expert_counts"],
-            grid_side=expert_centric_results["grid_side"],
         )
         if heatmap_path is not None:
             print(f"Saved expert heatmap plot     : {heatmap_path}")
+            print("Heatmap axes                  : y=layer, x=expert id")
         print("-" * 96)
         self._print_pair_correlation_summary(
             top_pairs=expert_centric_results["top_pairs"],
