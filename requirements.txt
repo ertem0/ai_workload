@@ -5,3 +5,5 @@ accelerate
 PyYAML
 fvcore
 safetensors
+numpy
+matplotlib

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import math
 import re
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -25,6 +27,15 @@ class CWSTracker:
         self.enabled = True
         self.num_routed_experts = self._infer_num_routed_experts()
         self.layer_counts: dict[str, torch.Tensor] = {}
+        self.global_expert_counts = torch.zeros(
+            self.num_routed_experts,
+            dtype=torch.long,
+        )
+        self.expert_pair_counts = torch.zeros(
+            (self.num_routed_experts, self.num_routed_experts),
+            dtype=torch.long,
+        )
+        self.total_routing_events = 0
 
     def _infer_num_routed_experts(self) -> int:
         """
@@ -147,14 +158,36 @@ class CWSTracker:
                     if selected_experts is None:
                         return
 
+                    event_indices = selected_experts.reshape(-1, router_top_k).cpu()
+                    self.total_routing_events += int(event_indices.shape[0])
+
                     # Flatten all token-level assignments from this layer and
                     # tally only the routed expert ids 0..59.
-                    flat_indices = selected_experts.reshape(-1)
+                    flat_indices = event_indices.reshape(-1)
                     counts = torch.bincount(
                         flat_indices,
                         minlength=self.num_routed_experts,
                     ).cpu()
                     self.layer_counts[current_layer_name].add_(counts)
+                    self.global_expert_counts.add_(counts)
+
+                    # Treat each (token, layer) selection as one routing event.
+                    # Off-diagonal entries count joint usage of expert pairs in
+                    # the exact same event; diagonal entries count marginal usage.
+                    for event in event_indices.tolist():
+                        unique_experts = sorted(
+                            {
+                                int(expert_id)
+                                for expert_id in event
+                                if 0 <= int(expert_id) < self.num_routed_experts
+                            }
+                        )
+                        for expert_id in unique_experts:
+                            self.expert_pair_counts[expert_id, expert_id] += 1
+                        for left_index, expert_i in enumerate(unique_experts):
+                            for expert_j in unique_experts[left_index + 1 :]:
+                                self.expert_pair_counts[expert_i, expert_j] += 1
+                                self.expert_pair_counts[expert_j, expert_i] += 1
 
                 return hook
 
@@ -220,6 +253,159 @@ class CWSTracker:
             )
         return results
 
+    def compute_expert_centric_results(self) -> dict[str, Any]:
+        """
+        Compute global expert-centric statistics over the flattened token-layer trace.
+
+        The trace order is conceptually:
+        token0-layer0, token0-layer1, ..., token0-layerN,
+        token1-layer0, ..., last-token-last-layer
+
+        Each trace element is one routing event containing the top-k selected experts.
+        """
+
+        grid_side = int(math.ceil(math.sqrt(self.num_routed_experts)))
+        pair_probabilities = self.expert_pair_counts.to(torch.float64)
+        if self.total_routing_events > 0:
+            pair_probabilities /= float(self.total_routing_events)
+
+        top_pairs: list[dict[str, Any]] = []
+        for expert_i in range(self.num_routed_experts):
+            for expert_j in range(expert_i + 1, self.num_routed_experts):
+                pair_count = int(self.expert_pair_counts[expert_i, expert_j].item())
+                if pair_count == 0:
+                    continue
+                top_pairs.append(
+                    {
+                        "expert_i": expert_i,
+                        "expert_j": expert_j,
+                        "count": pair_count,
+                        "probability": float(pair_probabilities[expert_i, expert_j].item()),
+                    }
+                )
+
+        top_pairs.sort(
+            key=lambda item: (-item["probability"], -item["count"], item["expert_i"], item["expert_j"])
+        )
+
+        return {
+            "grid_side": grid_side,
+            "global_expert_counts": self.global_expert_counts.clone(),
+            "pair_probability_matrix": pair_probabilities,
+            "top_pairs": top_pairs,
+            "total_routing_events": self.total_routing_events,
+        }
+
+    @staticmethod
+    def _format_heatmap_row(cells: list[str]) -> str:
+        return " | ".join(cells)
+
+    def _print_expert_heatmap(self, counts: torch.Tensor, grid_side: int) -> None:
+        print("Spatial heatmap (absolute expert usage counts)")
+        cell_width = 12
+        cells: list[str] = []
+        for expert_id in range(self.num_routed_experts):
+            cells.append(f"E{expert_id:02d}:{int(counts[expert_id].item()):>6}")
+        while len(cells) < grid_side * grid_side:
+            cells.append(" " * cell_width)
+        for row_start in range(0, len(cells), grid_side):
+            row = cells[row_start : row_start + grid_side]
+            print(f"   {self._format_heatmap_row(row)}")
+
+    def _save_expert_heatmap_plot(
+        self,
+        counts: torch.Tensor,
+        grid_side: int,
+        model_id: str,
+    ) -> Path | None:
+        """
+        Save a matplotlib heatmap of absolute expert usage counts.
+
+        Experts are laid out on an MxM grid, where M = ceil(sqrt(num_experts)).
+        Empty trailing cells are masked so the color scale only reflects real
+        expert tiles.
+        """
+
+        try:
+            import matplotlib
+
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            import numpy as np
+        except ImportError:
+            print(
+                "[CWS] matplotlib/numpy not available. Skipping saved expert heatmap plot."
+            )
+            return None
+
+        safe_model_name = re.sub(r"[^a-zA-Z0-9]+", "_", model_id).strip("_").lower()
+        output_path = Path(f"{safe_model_name}_expert_usage_heatmap.png")
+
+        heatmap = np.full((grid_side, grid_side), np.nan, dtype=float)
+        for expert_id, usage_count in enumerate(counts.tolist()):
+            row_index = expert_id // grid_side
+            col_index = expert_id % grid_side
+            heatmap[row_index, col_index] = float(usage_count)
+
+        masked_heatmap = np.ma.masked_invalid(heatmap)
+        cmap = plt.cm.inferno.copy()
+        cmap.set_bad(color="#f4f4f4")
+
+        figure, axis = plt.subplots(figsize=(1.45 * grid_side, 1.35 * grid_side))
+        image = axis.imshow(masked_heatmap, cmap=cmap, interpolation="nearest")
+        colorbar = figure.colorbar(image, ax=axis, fraction=0.046, pad=0.04)
+        colorbar.set_label("Absolute expert usage count", rotation=90)
+
+        axis.set_title("Expert-Centric Spatial Heatmap", pad=14)
+        axis.set_xlabel("Grid column")
+        axis.set_ylabel("Grid row")
+        axis.set_xticks(range(grid_side))
+        axis.set_yticks(range(grid_side))
+
+        finite_values = masked_heatmap.compressed()
+        text_threshold = float(finite_values.max() * 0.55) if finite_values.size else 0.0
+
+        for expert_id in range(self.num_routed_experts):
+            row_index = expert_id // grid_side
+            col_index = expert_id % grid_side
+            usage_count = int(counts[expert_id].item())
+            text_color = "white" if usage_count >= text_threshold else "black"
+            axis.text(
+                col_index,
+                row_index,
+                f"E{expert_id:02d}\n{usage_count}",
+                ha="center",
+                va="center",
+                fontsize=8,
+                color=text_color,
+                fontweight="semibold",
+            )
+
+        figure.tight_layout()
+        figure.savefig(output_path, dpi=220, bbox_inches="tight")
+        plt.close(figure)
+        return output_path
+
+    def _print_pair_correlation_summary(
+        self,
+        top_pairs: list[dict[str, Any]],
+        total_routing_events: int,
+    ) -> None:
+        print("Spatial correlation")
+        print(
+            "   P(Ei, Ej) = probability that experts Ei and Ej are selected in the same "
+            "token-layer routing event."
+        )
+        print(f"   Routing events traced      : {total_routing_events}")
+        if not top_pairs:
+            print("   No expert pairs were co-selected in the traced workload.")
+            return
+        for pair in top_pairs[:15]:
+            print(
+                f"   (E{pair['expert_i']:02d}, E{pair['expert_j']:02d}) -> "
+                f"{pair['probability']:.6f} ({pair['count']}/{total_routing_events})"
+            )
+
     def print_report(
         self,
         *,
@@ -242,6 +428,7 @@ class CWSTracker:
         total_assignments = sum(
             int(result["counts"].sum().item()) for result in results
         )
+        expert_centric_results = self.compute_expert_centric_results()
 
         print("=" * 96)
         print("Per-Layer Crossbar Workload Skewness (CWS) Report")
@@ -270,4 +457,23 @@ class CWSTracker:
                 f"usage_hist=[{usage_summary:<{usage_column_width}}] "
                 f"CWS={result['cws']:.6f}"
             )
+        print("=" * 96)
+        print("Expert-Centric Routing Report")
+        print("=" * 96)
+        heatmap_path = self._save_expert_heatmap_plot(
+            counts=expert_centric_results["global_expert_counts"],
+            grid_side=expert_centric_results["grid_side"],
+            model_id=model_id,
+        )
+        self._print_expert_heatmap(
+            counts=expert_centric_results["global_expert_counts"],
+            grid_side=expert_centric_results["grid_side"],
+        )
+        if heatmap_path is not None:
+            print(f"Saved expert heatmap plot     : {heatmap_path}")
+        print("-" * 96)
+        self._print_pair_correlation_summary(
+            top_pairs=expert_centric_results["top_pairs"],
+            total_routing_events=expert_centric_results["total_routing_events"],
+        )
         print("=" * 96)
