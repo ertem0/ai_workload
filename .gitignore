@@ -200,6 +200,7 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+.codex
 
 # Marimo
 marimo/_static/
@@ -213,3 +214,6 @@ __marimo__/
 
 .DS_Store
 .vscode/
+
+datasets/*
+results/*

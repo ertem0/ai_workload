@@ -1,8 +1,8 @@
-experiment_name: qwen15_moe_cws
+experiment_name: qwen15_moe_cws_top4
 
 model:
   id: "Qwen/Qwen1.5-MoE-A2.7B"
-  top_k: 2
+  top_k: 4
   precision: "fp16"
 
 dataset: ../datasets/thesis_500_prompts.json

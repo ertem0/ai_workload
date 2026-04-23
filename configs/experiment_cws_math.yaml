@@ -1,11 +1,14 @@
-experiment_name: qwen15_moe_cws
+experiment_name: qwen15_moe_cws_math
 
 model:
   id: "Qwen/Qwen1.5-MoE-A2.7B"
   top_k: 2
   precision: "fp16"
 
-dataset: ../datasets/thesis_500_prompts.json
+dataset:
+  - "Solve this algebra problem step by step: If 3x - 7 = 20, what is x, and how can you verify the answer?"
+  - "A rectangle has a perimeter of 42 cm and a length of 13 cm. Find its width and area, showing each step."
+  - "Explain in simple terms how the Pythagorean theorem works, then apply it to a right triangle with legs 6 and 8."
 
 metrics:
   calculate_cws: true

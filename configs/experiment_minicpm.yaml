@@ -5,10 +5,7 @@ model:
   precision: "fp16"
   prefer_safetensors: true # Fail fast on repos that only publish legacy .bin weights.
 
-dataset:
-  - "Solve this math word problem step by step: A train travels 240 kilometers in 3 hours, stops for 30 minutes, and then travels another 180 kilometers in 2 hours. What is the average speed across the whole trip including the stop?"
-  - "Write a Python function that merges two sorted lists without using the built-in sort function. Include type hints and explain the algorithmic complexity."
-  - "Explain in a few sentences why the fall of the Western Roman Empire had long-term political consequences for medieval Europe."
+dataset: ../datasets/thesis_500_prompts.json
 
 metrics:
   calculate_cws: true

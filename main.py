@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
 from pathlib import Path
+import re
+import shutil
 from typing import Any
 
 import torch
@@ -15,6 +19,29 @@ from src.models.loader import load_model_and_tokenizer
 
 def log_step(message: str) -> None:
     print(f"[MAIN] {message}", flush=True)
+
+
+def make_experiment_output_dir(experiment_name: str) -> Path:
+    safe_name = re.sub(r"[^a-zA-Z0-9]+", "_", experiment_name).strip("_").lower()
+    output_dir = Path("results") / safe_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+def reset_experiment_output_dir(output_dir: Path) -> None:
+    """
+    Remove any previous artifacts so each run starts with a clean results directory.
+    """
+
+    if not output_dir.exists():
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return
+
+    for child in output_dir.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,6 +69,33 @@ def load_yaml_config(config_path: Path) -> dict[str, Any]:
         return yaml.safe_load(handle)
 
 
+def load_dataset_prompts(dataset_config: Any, config_path: Path) -> list[str]:
+    """
+    Resolve the dataset section from either an inline prompt list or a JSON file path.
+    """
+
+    if isinstance(dataset_config, list):
+        prompts = dataset_config
+    elif isinstance(dataset_config, str):
+        dataset_path = Path(dataset_config)
+        if not dataset_path.is_absolute():
+            dataset_path = (config_path.parent / dataset_path).resolve()
+
+        with dataset_path.open("r", encoding="utf-8") as handle:
+            prompts = json.load(handle)
+    else:
+        raise TypeError(
+            "Config field 'dataset' must be either a list of prompt strings or a JSON file path."
+        )
+
+    if not isinstance(prompts, list) or not all(isinstance(prompt, str) for prompt in prompts):
+        raise ValueError(
+            "Resolved dataset must be a JSON/YAML list containing only prompt strings."
+        )
+
+    return prompts
+
+
 def set_trackers_enabled(
     cws_tracker: CWSTracker | None,
     aimc_runtime_tracker: AIMCMetricTracker | None,
@@ -67,13 +121,9 @@ def print_inference_outputs(outputs: list[dict[str, str]]) -> None:
         print("-" * 96)
 
 
-def main() -> None:
-    args = parse_args()
-    config_path = Path(args.config).resolve()
-    log_step(f"Reading config from {config_path}.")
-    config_dict = load_yaml_config(config_path)
-
+def run_experiment(config_dict: dict[str, Any], output_dir: Path) -> None:
     log_step(f"Experiment: {config_dict['experiment_name']}")
+    log_step(f"Results directory: {output_dir.resolve()}")
     log_step(f"Loading model: {config_dict['model']['id']}")
 
     model, tokenizer, model_info = load_model_and_tokenizer(config_dict)
@@ -113,6 +163,7 @@ def main() -> None:
     inference_cfg = config_dict.get("inference", {})
     max_new_tokens = int(inference_cfg.get("max_new_tokens", 64))
     total_input_tokens = 0
+    total_output_tokens = 0
     inference_outputs: list[dict[str, str]] = []
     log_step(f"Running {len(prompts)} prompts.")
 
@@ -130,6 +181,11 @@ def main() -> None:
             # The loader forces the model onto CPU, so inputs are also placed on CPU.
             encoded = {name: tensor.to("cpu") for name, tensor in encoded.items()}
             total_input_tokens += int(encoded["input_ids"].numel())
+            if cws_tracker is not None:
+                cws_tracker.start_prompt_trace(
+                    prompt_index=prompt_index,
+                    prompt_token_ids=encoded["input_ids"][0],
+                )
 
             log_step(
                 f"Starting forward pass {prompt_index}/{len(prompts)} "
@@ -157,18 +213,34 @@ def main() -> None:
                 f"Generating decoded output for prompt {prompt_index}/{len(prompts)} "
                 f"(max_new_tokens={max_new_tokens})."
             )
-            set_trackers_enabled(cws_tracker, aimc_runtime_tracker, False)
-            with torch.inference_mode():
-                generated = model.generate(
-                    **encoded,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=False,
-                    pad_token_id=tokenizer.pad_token_id,
-                    eos_token_id=tokenizer.eos_token_id,
+            if cws_tracker is not None:
+                cws_tracker.start_generation_trace(
+                    prompt_index=prompt_index,
+                    prompt_token_ids=encoded["input_ids"][0],
                 )
-            set_trackers_enabled(cws_tracker, aimc_runtime_tracker, True)
+            try:
+                if aimc_runtime_tracker is not None:
+                    aimc_runtime_tracker.set_enabled(False)
+                with torch.inference_mode():
+                    generated = model.generate(
+                        **encoded,
+                        max_new_tokens=max_new_tokens,
+                        do_sample=False,
+                        use_cache=True,
+                        pad_token_id=tokenizer.pad_token_id,
+                        eos_token_id=tokenizer.eos_token_id,
+                    )
+            finally:
+                if aimc_runtime_tracker is not None:
+                    aimc_runtime_tracker.set_enabled(True)
+            if cws_tracker is not None:
+                cws_tracker.finalize_generation_trace(
+                    prompt_index=prompt_index,
+                    generated_token_ids=generated[0],
+                )
 
             input_length = int(encoded["input_ids"].shape[-1])
+            total_output_tokens += int(generated[0][input_length:].shape[-1])
             decoded_text = tokenizer.decode(generated[0], skip_special_tokens=True)
             continuation = tokenizer.decode(
                 generated[0][input_length:],
@@ -200,6 +272,8 @@ def main() -> None:
             execution_device=model_info["execution_device"],
             prompts_processed=len(prompts),
             input_token_count=total_input_tokens,
+            output_token_count=total_output_tokens,
+            output_dir=output_dir,
         )
     if aimc_runtime_tracker is not None:
         log_step("Printing AIMC runtime report.")
@@ -207,6 +281,22 @@ def main() -> None:
     log_step("Printing inference outputs.")
     print_inference_outputs(inference_outputs)
     log_step("Benchmark run complete.")
+
+
+def main() -> None:
+    args = parse_args()
+    config_path = Path(args.config).resolve()
+    log_step(f"Reading config from {config_path}.")
+    config_dict = load_yaml_config(config_path)
+    config_dict["dataset"] = load_dataset_prompts(config_dict["dataset"], config_path)
+    output_dir = make_experiment_output_dir(config_dict["experiment_name"])
+    reset_experiment_output_dir(output_dir)
+    log_path = output_dir / "run.log"
+
+    with log_path.open("w", encoding="utf-8") as log_handle:
+        with contextlib.redirect_stdout(log_handle), contextlib.redirect_stderr(log_handle):
+            log_step(f"Writing combined logs to {log_path.resolve()}")
+            run_experiment(config_dict, output_dir)
 
 
 if __name__ == "__main__":

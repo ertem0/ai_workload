@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+import pickle
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import torch
 import torch.nn as nn
+
+
+@dataclass
+class RoutingTraceRecord:
+    prompt_index: int
+    phase: str
+    token_position: int
+    token_id: int | None
+    layer_id: int
+    layer_name: str
+    selected_experts: list[int]
 
 
 class CWSTracker:
@@ -25,6 +38,8 @@ class CWSTracker:
         self.handles: list[Any] = []
         self.enabled = True
         self.num_routed_experts = self._infer_num_routed_experts()
+        self.layer_order: list[str] = []
+        self.layer_name_to_id: dict[str, int] = {}
         self.layer_counts: dict[str, torch.Tensor] = {}
         self.global_expert_counts = torch.zeros(
             self.num_routed_experts,
@@ -35,6 +50,180 @@ class CWSTracker:
             dtype=torch.long,
         )
         self.total_routing_events = 0
+        self.routing_trace: dict[int, list[RoutingTraceRecord]] = {}
+        self.current_prompt_index: int | None = None
+        self.current_prompt_token_ids: list[int] = []
+        self.current_phase = "idle"
+        self.generate_prompt_length = 0
+        self.current_decode_step = -1
+
+    @staticmethod
+    def _normalize_token_ids(token_ids: torch.Tensor | list[int]) -> list[int]:
+        if isinstance(token_ids, torch.Tensor):
+            return [int(token_id) for token_id in token_ids.reshape(-1).tolist()]
+        return [int(token_id) for token_id in token_ids]
+
+    @staticmethod
+    def _extract_layer_id(layer_name: str) -> int:
+        if layer_name.startswith("layer "):
+            return int(layer_name.split()[-1])
+        return -1
+
+    def start_prompt_trace(
+        self,
+        *,
+        prompt_index: int,
+        prompt_token_ids: torch.Tensor | list[int],
+    ) -> None:
+        self.current_prompt_index = prompt_index
+        self.current_prompt_token_ids = self._normalize_token_ids(prompt_token_ids)
+        self.current_phase = "prefill"
+        self.generate_prompt_length = len(self.current_prompt_token_ids)
+        self.current_decode_step = -1
+        self.routing_trace.setdefault(prompt_index, [])
+
+    def start_generation_trace(
+        self,
+        *,
+        prompt_index: int,
+        prompt_token_ids: torch.Tensor | list[int],
+    ) -> None:
+        self.current_prompt_index = prompt_index
+        self.current_prompt_token_ids = self._normalize_token_ids(prompt_token_ids)
+        self.current_phase = "generate"
+        self.generate_prompt_length = len(self.current_prompt_token_ids)
+        self.current_decode_step = -1
+        self.routing_trace.setdefault(prompt_index, [])
+
+    def finalize_generation_trace(
+        self,
+        *,
+        prompt_index: int,
+        generated_token_ids: torch.Tensor | list[int],
+    ) -> None:
+        full_sequence = self._normalize_token_ids(generated_token_ids)
+        generated_suffix = full_sequence[self.generate_prompt_length :]
+        for record in self.routing_trace.get(prompt_index, []):
+            if record.phase != "decode" or record.token_id is not None:
+                continue
+            decode_index = record.token_position - self.generate_prompt_length
+            if 0 <= decode_index < len(generated_suffix):
+                record.token_id = generated_suffix[decode_index]
+        self.current_phase = "idle"
+
+    def _record_trace_event(
+        self,
+        *,
+        prompt_index: int,
+        phase: str,
+        token_position: int,
+        token_id: int | None,
+        layer_name: str,
+        selected_experts: list[int],
+    ) -> None:
+        self.routing_trace.setdefault(prompt_index, []).append(
+            RoutingTraceRecord(
+                prompt_index=prompt_index,
+                phase=phase,
+                token_position=token_position,
+                token_id=token_id,
+                layer_id=self.layer_name_to_id[layer_name],
+                layer_name=layer_name,
+                selected_experts=selected_experts,
+            )
+        )
+
+    def _accumulate_layer_event(
+        self,
+        *,
+        current_layer_name: str,
+        event_indices: torch.Tensor,
+    ) -> None:
+        self.total_routing_events += int(event_indices.shape[0])
+        flat_indices = event_indices.reshape(-1)
+        counts = torch.bincount(
+            flat_indices,
+            minlength=self.num_routed_experts,
+        ).cpu()
+        self.layer_counts[current_layer_name].add_(counts)
+        self.global_expert_counts.add_(counts)
+
+        for event in event_indices.tolist():
+            unique_experts = sorted(
+                {
+                    int(expert_id)
+                    for expert_id in event
+                    if 0 <= int(expert_id) < self.num_routed_experts
+                }
+            )
+            for expert_id in unique_experts:
+                self.expert_pair_counts[expert_id, expert_id] += 1
+            for left_index, expert_i in enumerate(unique_experts):
+                for expert_j in unique_experts[left_index + 1 :]:
+                    self.expert_pair_counts[expert_i, expert_j] += 1
+                    self.expert_pair_counts[expert_j, expert_i] += 1
+
+    def _capture_prefill_trace(
+        self,
+        *,
+        current_layer_name: str,
+        event_indices: torch.Tensor,
+    ) -> None:
+        prompt_index = self.current_prompt_index
+        if prompt_index is None:
+            return
+
+        self._accumulate_layer_event(
+            current_layer_name=current_layer_name,
+            event_indices=event_indices,
+        )
+        for token_offset, event in enumerate(event_indices.tolist()):
+            token_id = None
+            if token_offset < len(self.current_prompt_token_ids):
+                token_id = self.current_prompt_token_ids[token_offset]
+            self._record_trace_event(
+                prompt_index=prompt_index,
+                phase="prefill",
+                token_position=token_offset,
+                token_id=token_id,
+                layer_name=current_layer_name,
+                selected_experts=[int(expert_id) for expert_id in event],
+            )
+
+    def _capture_decode_trace(
+        self,
+        *,
+        current_layer_name: str,
+        event_indices: torch.Tensor,
+    ) -> None:
+        prompt_index = self.current_prompt_index
+        if prompt_index is None:
+            return
+
+        if event_indices.shape[0] != 1:
+            return
+
+        if self.layer_order and current_layer_name == self.layer_order[0]:
+            self.current_decode_step += 1
+
+        token_position = self.generate_prompt_length + max(self.current_decode_step, 0)
+        self._accumulate_layer_event(
+            current_layer_name=current_layer_name,
+            event_indices=event_indices,
+        )
+        self._record_trace_event(
+            prompt_index=prompt_index,
+            phase="decode",
+            token_position=token_position,
+            token_id=None,
+            layer_name=current_layer_name,
+            selected_experts=[int(expert_id) for expert_id in event_indices[0].tolist()],
+        )
+
+    def export_routing_trace(self, output_path: Path) -> Path:
+        with output_path.open("wb") as handle:
+            pickle.dump(self.routing_trace, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        return output_path
 
     def _infer_num_routed_experts(self) -> int:
         """
@@ -141,6 +330,8 @@ class CWSTracker:
 
             layer_name = self._extract_layer_name(module_name)
             if layer_name not in self.layer_counts:
+                self.layer_order.append(layer_name)
+                self.layer_name_to_id[layer_name] = self._extract_layer_id(layer_name)
                 self.layer_counts[layer_name] = torch.zeros(
                     self.num_routed_experts,
                     dtype=torch.long,
@@ -158,35 +349,17 @@ class CWSTracker:
                         return
 
                     event_indices = selected_experts.reshape(-1, router_top_k).cpu()
-                    self.total_routing_events += int(event_indices.shape[0])
-
-                    # Flatten all token-level assignments from this layer and
-                    # tally only the routed expert ids 0..59.
-                    flat_indices = event_indices.reshape(-1)
-                    counts = torch.bincount(
-                        flat_indices,
-                        minlength=self.num_routed_experts,
-                    ).cpu()
-                    self.layer_counts[current_layer_name].add_(counts)
-                    self.global_expert_counts.add_(counts)
-
-                    # Treat each (token, layer) selection as one routing event.
-                    # Off-diagonal entries count joint usage of expert pairs in
-                    # the exact same event; diagonal entries count marginal usage.
-                    for event in event_indices.tolist():
-                        unique_experts = sorted(
-                            {
-                                int(expert_id)
-                                for expert_id in event
-                                if 0 <= int(expert_id) < self.num_routed_experts
-                            }
+                    if self.current_phase == "generate":
+                        self._capture_decode_trace(
+                            current_layer_name=current_layer_name,
+                            event_indices=event_indices,
                         )
-                        for expert_id in unique_experts:
-                            self.expert_pair_counts[expert_id, expert_id] += 1
-                        for left_index, expert_i in enumerate(unique_experts):
-                            for expert_j in unique_experts[left_index + 1 :]:
-                                self.expert_pair_counts[expert_i, expert_j] += 1
-                                self.expert_pair_counts[expert_j, expert_i] += 1
+                        return
+
+                    self._capture_prefill_trace(
+                        current_layer_name=current_layer_name,
+                        event_indices=event_indices,
+                    )
 
                 return hook
 
@@ -286,6 +459,7 @@ class CWSTracker:
             "pair_probability_matrix": pair_probabilities,
             "top_pairs": top_pairs,
             "total_routing_events": self.total_routing_events,
+            "routing_trace": self.routing_trace,
         }
 
     def _save_expert_heatmap_plot(
@@ -293,6 +467,8 @@ class CWSTracker:
         layer_expert_matrix: torch.Tensor,
         layer_names: list[str],
         model_id: str,
+        configured_top_k: int,
+        output_dir: Path,
     ) -> Path | None:
         """
         Save a matplotlib heatmap of absolute expert usage counts per layer.
@@ -318,7 +494,9 @@ class CWSTracker:
             return None
 
         safe_model_name = re.sub(r"[^a-zA-Z0-9]+", "_", model_id).strip("_").lower()
-        output_path = Path(f"{safe_model_name}_layer_expert_usage_heatmap.png")
+        output_path = output_dir / (
+            f"{safe_model_name}_topk_{configured_top_k}_layer_expert_usage_heatmap.png"
+        )
 
         heatmap = layer_expert_matrix.to(torch.float64).numpy()
         figure_width = max(14.0, 0.26 * self.num_routed_experts)
@@ -372,6 +550,8 @@ class CWSTracker:
         execution_device: str,
         prompts_processed: int,
         input_token_count: int,
+        output_token_count: int,
+        output_dir: Path,
     ) -> None:
         """
         Print a formatted per-layer CWS report.
@@ -398,6 +578,7 @@ class CWSTracker:
         print(f"Execution device             : {execution_device}")
         print(f"Prompts processed            : {prompts_processed}")
         print(f"Input token count            : {input_token_count}")
+        print(f"Output token count           : {output_token_count}")
         print(f"Total expert assignments     : {total_assignments}")
         print("-" * 96)
         for result in results:
@@ -408,10 +589,14 @@ class CWSTracker:
         print("=" * 96)
         print("Expert-Centric Routing Report")
         print("=" * 96)
+        trace_path = self.export_routing_trace(output_dir / "routing_trace.pkl")
+        print(f"Saved routing trace           : {trace_path}")
         heatmap_path = self._save_expert_heatmap_plot(
             layer_expert_matrix=expert_centric_results["layer_expert_matrix"],
             layer_names=expert_centric_results["layer_names"],
             model_id=model_id,
+            configured_top_k=configured_top_k,
+            output_dir=output_dir,
         )
         if heatmap_path is not None:
             print(f"Saved expert heatmap plot     : {heatmap_path}")

@@ -1,11 +1,14 @@
-experiment_name: qwen15_moe_cws
+experiment_name: qwen15_moe_cws_history
 
 model:
   id: "Qwen/Qwen1.5-MoE-A2.7B"
   top_k: 2
   precision: "fp16"
 
-dataset: ../datasets/thesis_500_prompts.json
+dataset:
+  - "Explain the main causes of World War I in a clear paragraph for a first-year university student."
+  - "Compare the Industrial Revolution in Britain with industrialization in the United States, focusing on labor and technology."
+  - "Describe two major political consequences of the fall of the Western Roman Empire for medieval Europe."
 
 metrics:
   calculate_cws: true
