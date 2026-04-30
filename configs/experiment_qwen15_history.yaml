@@ -1,4 +1,4 @@
-experiment_name: qwen15_moe_cws_history
+experiment_name: qwen15_history
 
 model:
   id: "Qwen/Qwen1.5-MoE-A2.7B"
@@ -11,7 +11,7 @@ dataset:
   - "Describe two major political consequences of the fall of the Western Roman Empire for medieval Europe."
 
 metrics:
-  calculate_cws: true
+  calculate_expert_routing: true
   # calculate_system_arithmetic_intensity: true
   # calculate_crossbar_arithmetic_intensity: true
   # calculate_tiling_efficiency: true

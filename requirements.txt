@@ -7,3 +7,6 @@ fvcore
 safetensors
 numpy
 matplotlib
+seaborn
+tqdm
+umap-learn

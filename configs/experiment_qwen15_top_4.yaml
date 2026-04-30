@@ -1,4 +1,4 @@
-experiment_name: qwen15_moe_cws_top4
+experiment_name: qwen15_top4
 
 model:
   id: "Qwen/Qwen1.5-MoE-A2.7B"
@@ -8,7 +8,7 @@ model:
 dataset: ../datasets/thesis_500_prompts.json
 
 metrics:
-  calculate_cws: true
+  calculate_expert_routing: true
   # calculate_system_arithmetic_intensity: true
   # calculate_crossbar_arithmetic_intensity: true
   # calculate_tiling_efficiency: true

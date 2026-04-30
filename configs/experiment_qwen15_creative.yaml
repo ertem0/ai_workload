@@ -1,14 +1,17 @@
-experiment_name: qwen15_moe_cws
+experiment_name: qwen15_creative
 
 model:
   id: "Qwen/Qwen1.5-MoE-A2.7B"
   top_k: 2
   precision: "fp16"
 
-dataset: ../datasets/thesis_500_prompts.json
+dataset:
+  - "Write the opening paragraph of a mystery story set in a quiet coastal town during a storm."
+  - "Create a short fable about a fox and a lantern, and end with a clear moral."
+  - "Write a vivid two-paragraph scene in which an astronaut discovers a garden growing inside an abandoned space station."
 
 metrics:
-  calculate_cws: true
+  calculate_expert_routing: true
   # calculate_system_arithmetic_intensity: true
   # calculate_crossbar_arithmetic_intensity: true
   # calculate_tiling_efficiency: true

@@ -6,7 +6,7 @@ print("Downloading dataset from Hugging Face...")
 dataset = load_dataset("databricks/databricks-dolly-15k", split="train")
 
 # Shuffle and pick exactly 500
-shuffled_dataset = dataset.shuffle(seed=42).select(range(500))
+shuffled_dataset = dataset.shuffle(seed=21).select(range(500))
 
 # Clean them up into a simple list of text strings
 prompts = []
@@ -18,7 +18,7 @@ for row in shuffled_dataset:
     prompts.append(full_prompt)
 
 # Save to a local, offline file
-with open("thesis_500_prompts.json", "w") as f:
+with open("thesis_1000_prompts.json", "w") as f:
     json.dump(prompts, f, indent=4)
 
 print("Success! Saved 500 prompts to thesis_500_prompts.json")

@@ -1,4 +1,4 @@
-experiment_name: qwen15_moe_cws_math
+experiment_name: qwen15_math
 
 model:
   id: "Qwen/Qwen1.5-MoE-A2.7B"
@@ -11,7 +11,7 @@ dataset:
   - "Explain in simple terms how the Pythagorean theorem works, then apply it to a right triangle with legs 6 and 8."
 
 metrics:
-  calculate_cws: true
+  calculate_expert_routing: true
   # calculate_system_arithmetic_intensity: true
   # calculate_crossbar_arithmetic_intensity: true
   # calculate_tiling_efficiency: true

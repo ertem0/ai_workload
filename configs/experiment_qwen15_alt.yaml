@@ -1,4 +1,4 @@
-experiment_name: qwen15_moe_cws_benchmark_alt
+experiment_name: qwen15_benchmark_alt
 
 model:
   id: "Qwen/Qwen1.5-MoE-A2.7B"
@@ -23,7 +23,7 @@ dataset:
   - "A student drops a ball from a balcony. Explain how gravity and air resistance affect the motion as it falls."
 
 metrics:
-  calculate_cws: true
+  calculate_expert_routing: true
   # calculate_system_arithmetic_intensity: true
   # calculate_crossbar_arithmetic_intensity: true
   # calculate_tiling_efficiency: true

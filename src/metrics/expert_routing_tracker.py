@@ -1,27 +1,20 @@
 from __future__ import annotations
 
-import pickle
 import re
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import torch
 import torch.nn as nn
 
-
-@dataclass
-class RoutingTraceRecord:
-    prompt_index: int
-    phase: str
-    token_position: int
-    token_id: int | None
-    layer_id: int
-    layer_name: str
-    selected_experts: list[int]
+from src.tracing.routing_trace import (
+    RoutingTraceRecord,
+    export_routing_trace,
+    export_routing_trace_json,
+)
 
 
-class CWSTracker:
+class ExpertRoutingTracker:
     """
     Track Crossbar Workload Skewness (CWS) for Qwen MoE router layers.
 
@@ -220,10 +213,19 @@ class CWSTracker:
             selected_experts=[int(expert_id) for expert_id in event_indices[0].tolist()],
         )
 
-    def export_routing_trace(self, output_path: Path) -> Path:
-        with output_path.open("wb") as handle:
-            pickle.dump(self.routing_trace, handle, protocol=pickle.HIGHEST_PROTOCOL)
-        return output_path
+    def export_routing_trace(
+        self,
+        output_path: Path,
+        metadata: dict[str, Any] | None = None,
+    ) -> Path:
+        return export_routing_trace(self.routing_trace, output_path, metadata)
+
+    def export_routing_trace_json(
+        self,
+        output_path: Path,
+        metadata: dict[str, Any] | None = None,
+    ) -> Path:
+        return export_routing_trace_json(self.routing_trace, output_path, metadata)
 
     def _infer_num_routed_experts(self) -> int:
         """
@@ -368,7 +370,7 @@ class CWSTracker:
             )
 
         if not self.handles:
-            raise RuntimeError("No Qwen MoE gate layers were found for CWS tracking.")
+            raise RuntimeError("No Qwen MoE gate layers were found for expert routing tracking.")
 
     def set_enabled(self, enabled: bool) -> None:
         self.enabled = enabled
@@ -388,7 +390,7 @@ class CWSTracker:
 
     def compute_layer_results(self) -> list[dict[str, Any]]:
         """
-        Compute per-layer CWS values from the accumulated expert histograms.
+        Compute per-layer expert routing skew values from the accumulated expert histograms.
         """
 
         results: list[dict[str, Any]] = []
@@ -396,13 +398,13 @@ class CWSTracker:
             counts = self.layer_counts[layer_name].to(torch.float64)
             mean_count = float(counts.mean().item())
             std_count = float(counts.std(unbiased=False).item())
-            cws = float(std_count / mean_count) if mean_count > 0 else float("inf")
+            workload_skewness = float(std_count / mean_count) if mean_count > 0 else float("inf")
 
             results.append(
                 {
                     "layer_name": layer_name,
                     "counts": self.layer_counts[layer_name],
-                    "cws": cws,
+                    "workload_skewness": workload_skewness,
                 }
             )
         return results
@@ -462,65 +464,6 @@ class CWSTracker:
             "routing_trace": self.routing_trace,
         }
 
-    def _save_expert_heatmap_plot(
-        self,
-        layer_expert_matrix: torch.Tensor,
-        layer_names: list[str],
-        model_id: str,
-        configured_top_k: int,
-        output_dir: Path,
-    ) -> Path | None:
-        """
-        Save a matplotlib heatmap of absolute expert usage counts per layer.
-
-        The heatmap uses:
-        - x-axis: routed expert id
-        - y-axis: transformer layer
-        """
-
-        try:
-            import matplotlib
-
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-            import numpy as np
-        except ImportError:
-            print(
-                "[CWS] matplotlib/numpy not available. Skipping saved expert heatmap plot."
-            )
-            return None
-
-        if layer_expert_matrix.numel() == 0:
-            return None
-
-        safe_model_name = re.sub(r"[^a-zA-Z0-9]+", "_", model_id).strip("_").lower()
-        output_path = output_dir / (
-            f"{safe_model_name}_topk_{configured_top_k}_layer_expert_usage_heatmap.png"
-        )
-
-        heatmap = layer_expert_matrix.to(torch.float64).numpy()
-        figure_width = max(14.0, 0.26 * self.num_routed_experts)
-        figure_height = max(7.0, 0.42 * len(layer_names))
-        figure, axis = plt.subplots(figsize=(figure_width, figure_height))
-        image = axis.imshow(heatmap, cmap="inferno", interpolation="nearest", aspect="auto")
-        colorbar = figure.colorbar(image, ax=axis, fraction=0.046, pad=0.04)
-        colorbar.set_label("Expert usage count", rotation=90)
-
-        axis.set_title("Layer-By-Expert Routing Heatmap", pad=14)
-        axis.set_xlabel("Expert id")
-        axis.set_ylabel("Layer")
-        axis.set_xticks(range(self.num_routed_experts))
-        axis.set_xticklabels([str(expert_id) for expert_id in range(self.num_routed_experts)])
-        axis.set_yticks(range(len(layer_names)))
-        axis.set_yticklabels(layer_names)
-        axis.tick_params(axis="x", labelrotation=90, labelsize=7)
-        axis.tick_params(axis="y", labelsize=8)
-
-        figure.tight_layout()
-        figure.savefig(output_path, dpi=220, bbox_inches="tight")
-        plt.close(figure)
-        return output_path
-
     def _print_pair_correlation_summary(
         self,
         top_pairs: list[dict[str, Any]],
@@ -554,12 +497,12 @@ class CWSTracker:
         output_dir: Path,
     ) -> None:
         """
-        Print a formatted per-layer CWS report.
+        Print a formatted per-layer expert routing report.
         """
 
         results = self.compute_layer_results()
         if not results:
-            print("[CWS] No routing data was collected.")
+            print("[EXPERT_ROUTING] No routing data was collected.")
             return
 
         total_assignments = sum(
@@ -584,16 +527,19 @@ class CWSTracker:
         for result in results:
             print(
                 f"{result['layer_name']:<24} "
-                f"CWS={result['cws']:.6f}"
+                f"CWS={result['workload_skewness']:.6f}"
             )
         print("=" * 96)
         print("Expert-Centric Routing Report")
         print("=" * 96)
         trace_path = self.export_routing_trace(output_dir / "routing_trace.pkl")
         print(f"Saved routing trace           : {trace_path}")
-        heatmap_path = self._save_expert_heatmap_plot(
+        from src.plotting.expert_heatmaps import save_expert_heatmap_plot
+
+        heatmap_path = save_expert_heatmap_plot(
             layer_expert_matrix=expert_centric_results["layer_expert_matrix"],
             layer_names=expert_centric_results["layer_names"],
+            num_routed_experts=self.num_routed_experts,
             model_id=model_id,
             configured_top_k=configured_top_k,
             output_dir=output_dir,
