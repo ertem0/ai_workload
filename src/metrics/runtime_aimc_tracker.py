@@ -10,6 +10,8 @@ from typing import Any
 import torch
 import torch.nn as nn
 
+from src.metrics.crossbar_tiling_analyzer import classify_static_matrix
+
 try:
     from fvcore.nn import FlopCountAnalysis
     from fvcore.nn.jit_handles import get_shape
@@ -126,7 +128,7 @@ def is_attention_matrix_module(module: nn.Module) -> bool:
         hasattr(module, attr) for attr in qwen_attrs)
 
 
-class AIMCMetricTracker:
+class RuntimeAIMCTracker:
     """
     Collect runtime AIMC metrics originally prototyped in trace_matrix_operations.py.
 
@@ -151,6 +153,11 @@ class AIMCMetricTracker:
 
         self.current_activation_bytes = 0
         self.current_seen_storages: set[tuple[int, int, int]] = set()
+        self.current_prompt_index: int | None = None
+        self.current_input_shapes: dict[str, tuple[int, ...]] = {}
+        self.current_input_dtypes: dict[str, str] = {}
+        self.current_operations: list[dict[str, Any]] = []
+        self.inference_traces: list[dict[str, Any]] = []
 
         self.total_activation_bytes = 0
         self.dense_layers: list[dict[str, Any]] = []
@@ -226,17 +233,80 @@ class AIMCMetricTracker:
                         "arithmetic_intensity": arithmetic_intensity,
                     }
                 )
+                self.current_operations.append(
+                    {
+                        "op_type": "linear",
+                        "op_family": "static_weight_matmul",
+                        "module": module_name,
+                        "role": classify_static_matrix(module_name),
+                        "inputs": [
+                            {
+                                "name": "input",
+                                "shape": tuple(input_tensor.shape),
+                                "dtype": str(input_tensor.dtype),
+                                "kind": "activation",
+                                "static": False,
+                                "bytes": input_bytes,
+                            }
+                        ],
+                        "weights": [
+                            {
+                                "parameter_ref": f"{module_name}.weight",
+                                "shape": tuple(module.weight.shape),
+                                "dtype": str(module.weight.dtype),
+                                "kind": "parameter",
+                                "static": True,
+                                "bytes": weight_bytes,
+                            }
+                        ],
+                        "outputs": [
+                            {
+                                "name": "output",
+                                "shape": tuple(output_tensor.shape),
+                                "dtype": str(output_tensor.dtype),
+                                "kind": "activation",
+                                "static": False,
+                                "bytes": output_bytes,
+                            }
+                        ],
+                        "math": {
+                            "macs": layer_macs,
+                            "flops_estimate": layer_macs * 2,
+                            "arithmetic_intensity": arithmetic_intensity,
+                        },
+                    }
+                )
 
             return hook
 
         def sparsity_hook(module_name: str):
-            def hook(_: nn.Module, __: tuple[Any, ...], output: Any) -> None:
+            def hook(module: nn.Module, inputs: tuple[Any, ...], output: Any) -> None:
                 if not self.enabled or not self.prompt_active:
                     return
+                input_tensors = iter_tensors(inputs)
                 for tensor in iter_tensors(output):
                     self.activation_layer_names.add(module_name)
                     self.activation_zero_count += int(tensor.eq(0).sum().item())
                     self.activation_value_count += tensor.numel()
+                    input_shape = (
+                        tuple(input_tensors[0].shape)
+                        if input_tensors
+                        else tuple(tensor.shape)
+                    )
+                    self.current_operations.append(
+                        {
+                            "op_type": "activation",
+                            "op_family": "elementwise",
+                            "module": module_name,
+                            "role": "nonlinear activation",
+                            "activation": getattr(module, "label", module.__class__.__name__),
+                            "input_shape": input_shape,
+                            "output_shape": tuple(tensor.shape),
+                            "dtype": str(tensor.dtype),
+                            "element_count": tensor.numel(),
+                            "static": False,
+                        }
+                    )
 
             return hook
 
@@ -268,7 +338,7 @@ class AIMCMetricTracker:
                 # These two tensor products are formed from runtime activations,
                 # not fixed programmed weights, so they represent digital-side
                 # attention work rather than static crossbar mappings.
-                self.dynamic_ops.append(
+                attention_ops = [
                     {
                         "module": compact_name,
                         "kind": "Q x K^T",
@@ -277,9 +347,7 @@ class AIMCMetricTracker:
                         "rhs_shape": (batch_size, num_heads, head_dim, key_len),
                         "output_shape": (batch_size, num_heads, query_len, key_len),
                         "macs": score_macs,
-                    }
-                )
-                self.dynamic_ops.append(
+                    },
                     {
                         "module": compact_name,
                         "kind": "Attention x V",
@@ -288,8 +356,48 @@ class AIMCMetricTracker:
                         "rhs_shape": (batch_size, num_heads, key_len, head_dim),
                         "output_shape": (batch_size, num_heads, query_len, head_dim),
                         "macs": score_macs,
-                    }
-                )
+                    },
+                ]
+                self.dynamic_ops.extend(attention_ops)
+                for op in attention_ops:
+                    self.current_operations.append(
+                        {
+                            "op_type": "matmul",
+                            "op_family": "dynamic_activation_matmul",
+                            "module": op["module"],
+                            "role": op["role"],
+                            "kind": op["kind"],
+                            "inputs": [
+                                {
+                                    "name": "lhs",
+                                    "shape": op["lhs_shape"],
+                                    "dtype": str(hidden_states.dtype),
+                                    "kind": "activation",
+                                    "static": False,
+                                },
+                                {
+                                    "name": "rhs",
+                                    "shape": op["rhs_shape"],
+                                    "dtype": str(hidden_states.dtype),
+                                    "kind": "activation",
+                                    "static": False,
+                                },
+                            ],
+                            "outputs": [
+                                {
+                                    "name": "output",
+                                    "shape": op["output_shape"],
+                                    "dtype": str(hidden_states.dtype),
+                                    "kind": "activation",
+                                    "static": False,
+                                }
+                            ],
+                            "math": {
+                                "macs": op["macs"],
+                                "flops_estimate": op["macs"] * 2,
+                            },
+                        }
+                    )
 
             return hook
 
@@ -310,15 +418,78 @@ class AIMCMetricTracker:
             handle.remove()
         self.handles.clear()
 
-    def start_prompt(self) -> None:
+    def start_prompt(
+        self,
+        prompt_index: int | None = None,
+        batch: Mapping[str, torch.Tensor] | None = None,
+    ) -> None:
         self.prompt_active = True
+        self.current_prompt_index = prompt_index
         self.current_activation_bytes = 0
         self.current_seen_storages.clear()
+        self.current_operations = []
+        self.current_input_shapes = {}
+        self.current_input_dtypes = {}
+        if batch is not None:
+            self.current_input_shapes = {
+                name: tuple(tensor.shape)
+                for name, tensor in batch.items()
+                if isinstance(tensor, torch.Tensor)
+            }
+            self.current_input_dtypes = {
+                name: str(tensor.dtype)
+                for name, tensor in batch.items()
+                if isinstance(tensor, torch.Tensor)
+            }
 
     def finish_prompt(self) -> None:
         if self.prompt_active:
             self.total_activation_bytes += self.current_activation_bytes
             self.prompt_count += 1
+            operation_counts = Counter(
+                str(operation.get("op_type", "unknown"))
+                for operation in self.current_operations
+            )
+            static_weight_macs = sum(
+                int(operation.get("math", {}).get("macs", 0))
+                for operation in self.current_operations
+                if operation.get("op_family") == "static_weight_matmul"
+            )
+            dynamic_activation_macs = sum(
+                int(operation.get("math", {}).get("macs", 0))
+                for operation in self.current_operations
+                if operation.get("op_family") == "dynamic_activation_matmul"
+            )
+            nonlinear_element_ops = sum(
+                int(operation.get("element_count", 0))
+                for operation in self.current_operations
+                if operation.get("op_family") == "elementwise"
+            )
+            operations = [
+                {"event_id": event_id, **operation}
+                for event_id, operation in enumerate(self.current_operations)
+            ]
+            self.inference_traces.append(
+                {
+                    "inference_id": len(self.inference_traces),
+                    "prompt_index": self.current_prompt_index,
+                    "phase": "prefill",
+                    "input_shape": self.current_input_shapes,
+                    "input_dtypes": self.current_input_dtypes,
+                    "operations": operations,
+                    "summary": {
+                        "total_ops": len(operations),
+                        "operation_counts": dict(operation_counts),
+                        "linear_ops": operation_counts.get("linear", 0),
+                        "dynamic_matmul_ops": operation_counts.get("matmul", 0),
+                        "activation_ops": operation_counts.get("activation", 0),
+                        "static_weight_macs": static_weight_macs,
+                        "dynamic_activation_macs": dynamic_activation_macs,
+                        "nonlinear_element_ops": nonlinear_element_ops,
+                        "activation_bytes": self.current_activation_bytes,
+                    },
+                }
+            )
         self.prompt_active = False
 
     def analyze_flops_for_prompt(self, batch: Mapping[str, torch.Tensor]) -> None:

@@ -1,0 +1,31 @@
+experiment_name: qwen15_coding
+
+model:
+  id: "Qwen/Qwen1.5-MoE-A2.7B"
+  top_k: 2
+  precision: "fp16"
+  device: "cpu"
+  max_memory:
+    0: "20GiB"
+    cpu: "110GiB"
+
+dataset:
+  - "Write a Python function to remove duplicate values from a list while preserving the original order. Include type hints."
+  - "Explain how a hash table works, then provide a short Python example that uses a dictionary to count word frequencies."
+  - "Write a Python function that checks whether a string is a palindrome, ignoring spaces and capitalization, and explain the time complexity."
+
+# Optional log filtering. Omit this block to print every phase.
+logging:
+  disabled_phases: ["prompt", "generation"]
+  enabled_phases: ["setup", "model", "tracker", "inference", "trace", "summary"]
+  show_phase: true
+
+metrics:
+  calculate_expert_routing: true
+  # calculate_system_arithmetic_intensity: true
+  # calculate_crossbar_arithmetic_intensity: true
+  # calculate_tiling_efficiency: true
+  # calculate_linear_vs_nonlinear_ratio: true
+  # calculate_static_vs_dynamic_ratio: true
+  # calculate_activation_sparsity: true
+  # crossbar_dimensions: [128, 128]

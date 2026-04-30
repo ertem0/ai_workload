@@ -1,0 +1,18 @@
+experiment_name: qwen15_2
+
+model:
+  id: "Qwen/Qwen1.5-MoE-A2.7B"
+  top_k: 2
+  precision: "fp16"
+
+dataset: ../datasets/thesis_500_prompts2.json
+
+metrics:
+  calculate_expert_routing: true
+  # calculate_system_arithmetic_intensity: true
+  # calculate_crossbar_arithmetic_intensity: true
+  # calculate_tiling_efficiency: true
+  # calculate_linear_vs_nonlinear_ratio: true
+  # calculate_static_vs_dynamic_ratio: true
+  # calculate_activation_sparsity: true
+  # crossbar_dimensions: [128, 128]

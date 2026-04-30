@@ -1,0 +1,21 @@
+experiment_name: qwen15_science
+
+model:
+  id: "Qwen/Qwen1.5-MoE-A2.7B"
+  top_k: 2
+  precision: "fp16"
+
+dataset:
+  - "Explain how photosynthesis works, including the role of sunlight, water, and carbon dioxide."
+  - "Describe the difference between DNA and RNA in structure and biological function."
+  - "A student drops a ball from a balcony. Explain how gravity and air resistance affect the motion as it falls."
+
+metrics:
+  calculate_expert_routing: true
+  # calculate_system_arithmetic_intensity: true
+  # calculate_crossbar_arithmetic_intensity: true
+  # calculate_tiling_efficiency: true
+  # calculate_linear_vs_nonlinear_ratio: true
+  # calculate_static_vs_dynamic_ratio: true
+  # calculate_activation_sparsity: true
+  # crossbar_dimensions: [128, 128]

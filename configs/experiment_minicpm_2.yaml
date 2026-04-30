@@ -1,11 +1,11 @@
-experiment_name: "minicpm_profile"
+experiment_name: "minicpm_profile2"
 model:
   id: "openbmb/MiniCPM-MoE-8x2B"
   top_k: 2 # The default. You can sweep 1, 2, 4, 8.
   precision: "fp16"
   prefer_safetensors: true # Fail fast on repos that only publish legacy .bin weights.
 
-dataset: ../datasets/thesis_500_prompts.json
+dataset: ../datasets/thesis_500_prompts2.json
 
 metrics:
   calculate_expert_routing: true

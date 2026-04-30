@@ -1,0 +1,33 @@
+experiment_name: qwen15_benchmark_alt
+
+model:
+  id: "Qwen/Qwen1.5-MoE-A2.7B"
+  top_k: 2
+  precision: "fp16"
+
+dataset:
+  - "Write a Python function to remove duplicate values from a list while preserving the original order. Include type hints."
+  - "Explain how a hash table works, then provide a short Python example that uses a dictionary to count word frequencies."
+  - "Write a Python function that checks whether a string is a palindrome, ignoring spaces and capitalization, and explain the time complexity."
+  - "Write the opening paragraph of a mystery story set in a quiet coastal town during a storm."
+  - "Create a short fable about a fox and a lantern, and end with a clear moral."
+  - "Write a vivid two-paragraph scene in which an astronaut discovers a garden growing inside an abandoned space station."
+  - "Explain the main causes of World War I in a clear paragraph for a first-year university student."
+  - "Compare the Industrial Revolution in Britain with industrialization in the United States, focusing on labor and technology."
+  - "Describe two major political consequences of the fall of the Western Roman Empire for medieval Europe."
+  - "Solve this algebra problem step by step: If 3x - 7 = 20, what is x, and how can you verify the answer?"
+  - "A rectangle has a perimeter of 42 cm and a length of 13 cm. Find its width and area, showing each step."
+  - "Explain in simple terms how the Pythagorean theorem works, then apply it to a right triangle with legs 6 and 8."
+  - "Explain how photosynthesis works, including the role of sunlight, water, and carbon dioxide."
+  - "Describe the difference between DNA and RNA in structure and biological function."
+  - "A student drops a ball from a balcony. Explain how gravity and air resistance affect the motion as it falls."
+
+metrics:
+  calculate_expert_routing: true
+  # calculate_system_arithmetic_intensity: true
+  # calculate_crossbar_arithmetic_intensity: true
+  # calculate_tiling_efficiency: true
+  # calculate_linear_vs_nonlinear_ratio: true
+  # calculate_static_vs_dynamic_ratio: true
+  # calculate_activation_sparsity: true
+  # crossbar_dimensions: [128, 128]
