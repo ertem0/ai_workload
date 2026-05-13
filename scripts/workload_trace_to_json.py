@@ -33,6 +33,73 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def flatten_op(op: dict[str, Any], phase: str) -> dict[str, Any]:
+    """Collapse a nested operation record into the compact flat schema."""
+    op_type = op.get("op_type", "unknown")
+    inputs: list[dict[str, Any]] = op.get("inputs", [])
+    weights: list[dict[str, Any]] = op.get("weights", [])
+    outputs: list[dict[str, Any]] = op.get("outputs", [])
+
+    # input_shape — prefer structured inputs array, fall back to legacy flat field
+    if inputs:
+        input_shape = inputs[0].get("shape")
+    else:
+        raw = op.get("input_shape")
+        input_shape = list(raw) if raw is not None else None
+
+    # weight_shape — weights array for linear; rhs inputs[1] for dynamic matmul
+    if weights:
+        weight_shape = weights[0].get("shape")
+    elif op_type == "matmul" and len(inputs) >= 2:
+        weight_shape = inputs[1].get("shape")
+    else:
+        weight_shape = None
+
+    # output_shape
+    if outputs:
+        output_shape = outputs[0].get("shape")
+    else:
+        raw = op.get("output_shape")
+        output_shape = list(raw) if raw is not None else None
+
+    total_bytes = sum(
+        int(item.get("bytes", 0)) for item in inputs + weights + outputs
+    )
+    math = op.get("math", {})
+    flops = int(math.get("flops_estimate", 0))
+
+    return {
+        "event_id": op.get("event_id"),
+        "phase": phase,
+        "module": op.get("module"),
+        "op_type": op_type,
+        "op_family": op.get("op_family"),
+        "role": op.get("role"),
+        "input_shape": [int(d) for d in input_shape] if input_shape is not None else None,
+        "weight_shape": [int(d) for d in weight_shape] if weight_shape is not None else None,
+        "output_shape": [int(d) for d in output_shape] if output_shape is not None else None,
+        "flops": flops,
+        "bytes": total_bytes,
+    }
+
+
+def reshape_inferences(inferences: list[Any]) -> list[Any]:
+    """Replace each inference's operations list with flat op records."""
+    reshaped = []
+    for inference in inferences:
+        if not isinstance(inference, dict):
+            reshaped.append(inference)
+            continue
+        phase = inference.get("phase", "prefill")
+        flat_ops = [
+            flatten_op(op, phase)
+            for op in inference.get("operations", [])
+            if isinstance(op, dict)
+        ]
+        reshaped.append({**inference, "operations": flat_ops})
+    return reshaped
+
+
 def normalize_for_json(value: Any) -> Any:
     if is_dataclass(value):
         return normalize_for_json(asdict(value))
@@ -78,6 +145,9 @@ def main() -> None:
 
     with input_path.open("rb") as handle:
         payload = pickle.load(handle)
+
+    if isinstance(payload, dict) and "inferences" in payload:
+        payload = {**payload, "inferences": reshape_inferences(payload["inferences"])}
 
     serializable_payload = normalize_for_json(payload)
     json_kwargs: dict[str, Any] = {"ensure_ascii": False}

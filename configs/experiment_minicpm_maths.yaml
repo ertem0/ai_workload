@@ -1,0 +1,12 @@
+experiment_name: "minicpm_profile_maths"
+model:
+  id: "openbmb/MiniCPM-MoE-8x2B"
+  top_k: 2 # The default. You can sweep 1, 2, 4, 8.
+  precision: "fp16"
+  prefer_safetensors: true # Fail fast on repos that only publish legacy .bin weights.
+
+dataset: ../datasets/gsm8k_prompts.json
+
+metrics:
+  calculate_expert_routing: true
+

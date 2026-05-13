@@ -172,9 +172,13 @@ def run_experiment(config_dict: dict[str, Any], output_dir: Path) -> dict[str, A
                     prompt_index=prompt_index,
                     prompt_token_ids=encoded["input_ids"][0],
                 )
+            if runtime_aimc_tracker is not None:
+                runtime_aimc_tracker.start_prompt(
+                    prompt_index=prompt_index,
+                    batch=encoded,
+                    phase="decode",
+                )
             try:
-                if runtime_aimc_tracker is not None:
-                    runtime_aimc_tracker.set_enabled(False)
                 with torch.inference_mode():
                     generated = model.generate(
                         **encoded,
@@ -186,7 +190,7 @@ def run_experiment(config_dict: dict[str, Any], output_dir: Path) -> dict[str, A
                     )
             finally:
                 if runtime_aimc_tracker is not None:
-                    runtime_aimc_tracker.set_enabled(True)
+                    runtime_aimc_tracker.finish_prompt()
             if expert_routing_tracker is not None:
                 expert_routing_tracker.finalize_generation_trace(
                     prompt_index=prompt_index,

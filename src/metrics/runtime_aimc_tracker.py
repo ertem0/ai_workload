@@ -107,6 +107,37 @@ def compact_module_name(module_name: str) -> str:
     return re.sub(r"(\.(?:layers|h|block|blocks))\.\d+(\.)", r"\1.*\2", module_name)
 
 
+def is_rope_module(module: nn.Module) -> bool:
+    cls = module.__class__.__name__.lower()
+    return (
+        "rotary" in cls
+        or hasattr(module, "inv_freq")
+        or (hasattr(module, "cos_cached") and hasattr(module, "sin_cached"))
+    )
+
+
+def is_gated_mlp_module(module: nn.Module) -> bool:
+    return (
+        hasattr(module, "gate_proj")
+        and hasattr(module, "up_proj")
+        and hasattr(module, "down_proj")
+    )
+
+
+def is_transformer_block_module(module: nn.Module) -> bool:
+    has_attn = hasattr(module, "self_attn") or hasattr(module, "attention")
+    has_mlp = hasattr(module, "mlp") or hasattr(module, "feed_forward")
+    return has_attn and has_mlp
+
+
+def is_moe_block_module(module: nn.Module) -> bool:
+    return (
+        hasattr(module, "gate")
+        and isinstance(getattr(module, "gate"), nn.Linear)
+        and (hasattr(module, "experts") or hasattr(module, "num_experts"))
+    )
+
+
 def is_attention_matrix_module(module: nn.Module) -> bool:
     """
     Identify attention modules that produce dynamic tensor products.
@@ -147,6 +178,7 @@ class RuntimeAIMCTracker:
         self.enabled = True
         self.prompt_active = False
         self.prompt_count = 0
+        self.current_phase = "prefill"
 
         self.param_bytes = sum(tensor_nbytes(parameter) for parameter in model.parameters())
         self.wrapped_activations = self._wrap_functional_activations()
@@ -293,6 +325,11 @@ class RuntimeAIMCTracker:
                         if input_tensors
                         else tuple(tensor.shape)
                     )
+                    input_bytes = tensor_nbytes(input_tensors[0]) if input_tensors else tensor_nbytes(tensor)
+                    output_bytes = tensor_nbytes(tensor)
+                    total_bytes = input_bytes + output_bytes
+                    n = tensor.numel()
+                    ai = n / total_bytes if total_bytes else 0.0
                     self.current_operations.append(
                         {
                             "op_type": "activation",
@@ -300,11 +337,14 @@ class RuntimeAIMCTracker:
                             "module": module_name,
                             "role": "nonlinear activation",
                             "activation": getattr(module, "label", module.__class__.__name__),
+                            "inputs": [{"name": "input", "shape": input_shape, "dtype": str(tensor.dtype), "bytes": input_bytes}],
+                            "outputs": [{"name": "output", "shape": tuple(tensor.shape), "dtype": str(tensor.dtype), "bytes": output_bytes}],
                             "input_shape": input_shape,
                             "output_shape": tuple(tensor.shape),
                             "dtype": str(tensor.dtype),
-                            "element_count": tensor.numel(),
+                            "element_count": n,
                             "static": False,
+                            "math": {"macs": n // 2, "flops_estimate": n, "arithmetic_intensity": ai},
                         }
                     )
 
@@ -401,6 +441,215 @@ class RuntimeAIMCTracker:
 
             return hook
 
+        def layernorm_hook(module_name: str):
+            def hook(_: nn.Module, inputs: tuple[Any, ...], output: Any) -> None:
+                if not self.enabled or not self.prompt_active:
+                    return
+                input_tensors = iter_tensors(inputs)
+                if not input_tensors or not isinstance(output, torch.Tensor):
+                    return
+                x = input_tensors[0]
+                n = x.numel()
+                input_bytes = tensor_nbytes(x)
+                output_bytes = tensor_nbytes(output)
+                total_bytes = input_bytes + output_bytes
+                flops = 5 * n
+                ai = flops / total_bytes if total_bytes else 0.0
+                self.current_operations.append({
+                    "op_type": "layernorm",
+                    "op_family": "reduction",
+                    "module": module_name,
+                    "role": "layer normalization",
+                    "inputs": [{"name": "input", "shape": tuple(x.shape), "dtype": str(x.dtype), "bytes": input_bytes}],
+                    "outputs": [{"name": "output", "shape": tuple(output.shape), "dtype": str(output.dtype), "bytes": output_bytes}],
+                    "dtype": str(x.dtype),
+                    "element_count": n,
+                    "math": {"macs": flops // 2, "flops_estimate": flops, "arithmetic_intensity": ai},
+                })
+            return hook
+
+        def softmax_hook(module_name: str):
+            def hook(_: nn.Module, inputs: tuple[Any, ...], output: Any) -> None:
+                if not self.enabled or not self.prompt_active:
+                    return
+                input_tensors = iter_tensors(inputs)
+                if not input_tensors or not isinstance(output, torch.Tensor):
+                    return
+                x = input_tensors[0]
+                n = x.numel()
+                input_bytes = tensor_nbytes(x)
+                output_bytes = tensor_nbytes(output)
+                total_bytes = input_bytes + output_bytes
+                flops = 3 * n
+                ai = flops / total_bytes if total_bytes else 0.0
+                self.current_operations.append({
+                    "op_type": "softmax",
+                    "op_family": "reduction",
+                    "module": module_name,
+                    "role": "softmax normalization",
+                    "inputs": [{"name": "input", "shape": tuple(x.shape), "dtype": str(x.dtype), "bytes": input_bytes}],
+                    "outputs": [{"name": "output", "shape": tuple(output.shape), "dtype": str(output.dtype), "bytes": output_bytes}],
+                    "dtype": str(x.dtype),
+                    "element_count": n,
+                    "math": {"macs": flops // 2, "flops_estimate": flops, "arithmetic_intensity": ai},
+                })
+            return hook
+
+        def rope_hook(module_name: str):
+            def hook(_: nn.Module, inputs: tuple[Any, ...], output: Any) -> None:
+                if not self.enabled or not self.prompt_active:
+                    return
+                output_tensors = [t for t in iter_tensors(output) if t.is_floating_point()]
+                if not output_tensors:
+                    return
+                n = sum(t.numel() for t in output_tensors)
+                total_bytes = sum(tensor_nbytes(t) for t in output_tensors)
+                flops = 6 * n
+                ai = flops / (2 * total_bytes) if total_bytes else 0.0
+                self.current_operations.append({
+                    "op_type": "rope_embed",
+                    "op_family": "rope",
+                    "module": module_name,
+                    "role": "rotary position embedding",
+                    "outputs": [
+                        {"name": f"output_{i}", "shape": tuple(t.shape), "dtype": str(t.dtype), "bytes": tensor_nbytes(t)}
+                        for i, t in enumerate(output_tensors)
+                    ],
+                    "element_count": n,
+                    "math": {"macs": flops // 2, "flops_estimate": flops, "arithmetic_intensity": ai},
+                })
+            return hook
+
+        def gated_mlp_hook(module_name: str, module: nn.Module):
+            def hook(_: nn.Module, inputs: tuple[Any, ...], output: Any) -> None:
+                if not self.enabled or not self.prompt_active:
+                    return
+                input_tensors = [t for t in iter_tensors(inputs) if t.is_floating_point()]
+                if not input_tensors:
+                    return
+                x = input_tensors[0]
+                intermediate_size = module.gate_proj.out_features
+                n_tokens = x.numel() // x.shape[-1]
+                n = n_tokens * intermediate_size
+                elem_bytes = x.element_size()
+                total_bytes = 3 * n * elem_bytes
+                ai = n / total_bytes if total_bytes else 0.0
+                self.current_operations.append({
+                    "op_type": "elementwise_multiply",
+                    "op_family": "elementwise",
+                    "module": module_name,
+                    "role": "gated mlp activation multiply",
+                    "inputs": [
+                        {"name": "gate", "shape": (n_tokens, intermediate_size), "dtype": str(x.dtype), "bytes": n * elem_bytes},
+                        {"name": "up", "shape": (n_tokens, intermediate_size), "dtype": str(x.dtype), "bytes": n * elem_bytes},
+                    ],
+                    "outputs": [
+                        {"name": "output", "shape": (n_tokens, intermediate_size), "dtype": str(x.dtype), "bytes": n * elem_bytes},
+                    ],
+                    "element_count": n,
+                    "math": {"macs": n, "flops_estimate": n, "arithmetic_intensity": ai},
+                })
+            return hook
+
+        def transformer_block_hook(module_name: str):
+            def hook(_: nn.Module, inputs: tuple[Any, ...], output: Any) -> None:
+                if not self.enabled or not self.prompt_active:
+                    return
+                hidden_states = next(
+                    (t for t in iter_tensors(inputs) if t.is_floating_point() and t.dim() >= 2),
+                    None,
+                )
+                if hidden_states is None:
+                    return
+                n = hidden_states.numel()
+                elem_bytes = hidden_states.element_size()
+                shape = tuple(hidden_states.shape)
+                dtype = str(hidden_states.dtype)
+                for role in ("attention", "mlp"):
+                    total_bytes = 2 * n * elem_bytes
+                    ai = n / total_bytes if total_bytes else 0.0
+                    self.current_operations.append({
+                        "op_type": "residual_add",
+                        "op_family": "elementwise",
+                        "module": module_name,
+                        "role": f"residual add after {role}",
+                        "inputs": [
+                            {"name": "residual", "shape": shape, "dtype": dtype, "bytes": n * elem_bytes},
+                            {"name": "sublayer_output", "shape": shape, "dtype": dtype, "bytes": n * elem_bytes},
+                        ],
+                        "outputs": [{"name": "output", "shape": shape, "dtype": dtype, "bytes": n * elem_bytes}],
+                        "element_count": n,
+                        "math": {"macs": n, "flops_estimate": n, "arithmetic_intensity": ai},
+                    })
+            return hook
+
+        def moe_block_hook(module_name: str, module: nn.Module):
+            def hook(_: nn.Module, inputs: tuple[Any, ...], output: Any) -> None:
+                if not self.enabled or not self.prompt_active:
+                    return
+                hidden_states = next(
+                    (t for t in iter_tensors(inputs) if t.is_floating_point() and t.dim() >= 2),
+                    None,
+                )
+                if hidden_states is None:
+                    return
+                n_tokens = hidden_states.numel() // hidden_states.shape[-1]
+                hidden_size = int(hidden_states.shape[-1])
+                num_experts = int(
+                    getattr(module, "num_experts", len(getattr(module, "experts", [])))
+                )
+                top_k = int(getattr(module, "top_k", getattr(module, "num_experts_per_tok", 2)))
+                if num_experts == 0:
+                    return
+                elem_bytes = hidden_states.element_size()
+                dtype = str(hidden_states.dtype)
+
+                gate_n = n_tokens * num_experts
+                gate_flops = 3 * gate_n
+                gate_bytes = gate_n * elem_bytes * 2
+                gate_ai = gate_flops / gate_bytes if gate_bytes else 0.0
+
+                topk_flops = n_tokens * num_experts
+                topk_bytes = gate_n * elem_bytes
+                topk_ai = topk_flops / topk_bytes if topk_bytes else 0.0
+
+                scatter_n = n_tokens * top_k * hidden_size
+                scatter_bytes = scatter_n * elem_bytes * 2
+
+                self.current_operations.extend([
+                    {
+                        "op_type": "gate_softmax",
+                        "op_family": "moe_routing",
+                        "module": module_name,
+                        "role": "moe gate softmax",
+                        "inputs": [{"name": "logits", "shape": (n_tokens, num_experts), "dtype": dtype, "bytes": gate_n * elem_bytes}],
+                        "outputs": [{"name": "weights", "shape": (n_tokens, num_experts), "dtype": dtype, "bytes": gate_n * elem_bytes}],
+                        "element_count": gate_n,
+                        "math": {"macs": gate_flops // 2, "flops_estimate": gate_flops, "arithmetic_intensity": gate_ai},
+                    },
+                    {
+                        "op_type": "top_k",
+                        "op_family": "moe_routing",
+                        "module": module_name,
+                        "role": "moe top-k expert selection",
+                        "inputs": [{"name": "weights", "shape": (n_tokens, num_experts), "dtype": dtype, "bytes": gate_n * elem_bytes}],
+                        "outputs": [{"name": "selected", "shape": (n_tokens, top_k), "dtype": dtype, "bytes": n_tokens * top_k * elem_bytes}],
+                        "element_count": gate_n,
+                        "math": {"macs": topk_flops // 2, "flops_estimate": topk_flops, "arithmetic_intensity": topk_ai},
+                    },
+                    {
+                        "op_type": "token_dispatch",
+                        "op_family": "moe_routing",
+                        "module": module_name,
+                        "role": "moe token scatter/gather",
+                        "inputs": [{"name": "tokens", "shape": (n_tokens, hidden_size), "dtype": dtype, "bytes": n_tokens * hidden_size * elem_bytes}],
+                        "outputs": [{"name": "dispatched", "shape": (n_tokens, top_k, hidden_size), "dtype": dtype, "bytes": scatter_n * elem_bytes}],
+                        "element_count": scatter_n,
+                        "math": {"macs": scatter_n, "flops_estimate": scatter_n, "arithmetic_intensity": 1.0},
+                    },
+                ])
+            return hook
+
         activation_types = (nn.ReLU, nn.GELU, nn.SiLU, HookableActivation)
 
         for module_name, module in self.model.named_modules():
@@ -410,8 +659,20 @@ class RuntimeAIMCTracker:
                 self.handles.append(module.register_forward_hook(linear_hook(module_name, module)))
             if isinstance(module, activation_types):
                 self.handles.append(module.register_forward_hook(sparsity_hook(module_name)))
+            if isinstance(module, nn.LayerNorm):
+                self.handles.append(module.register_forward_hook(layernorm_hook(module_name)))
+            if isinstance(module, nn.Softmax):
+                self.handles.append(module.register_forward_hook(softmax_hook(module_name)))
             if is_attention_matrix_module(module):
                 self.handles.append(module.register_forward_hook(attention_hook(module_name, module)))
+            if is_rope_module(module):
+                self.handles.append(module.register_forward_hook(rope_hook(module_name)))
+            if is_gated_mlp_module(module):
+                self.handles.append(module.register_forward_hook(gated_mlp_hook(module_name, module)))
+            if is_transformer_block_module(module):
+                self.handles.append(module.register_forward_hook(transformer_block_hook(module_name)))
+            if is_moe_block_module(module):
+                self.handles.append(module.register_forward_hook(moe_block_hook(module_name, module)))
 
     def remove_hooks(self) -> None:
         for handle in self.handles:
@@ -422,8 +683,10 @@ class RuntimeAIMCTracker:
         self,
         prompt_index: int | None = None,
         batch: Mapping[str, torch.Tensor] | None = None,
+        phase: str = "prefill",
     ) -> None:
         self.prompt_active = True
+        self.current_phase = phase
         self.current_prompt_index = prompt_index
         self.current_activation_bytes = 0
         self.current_seen_storages.clear()
@@ -465,6 +728,18 @@ class RuntimeAIMCTracker:
                 for operation in self.current_operations
                 if operation.get("op_family") == "elementwise"
             )
+            reduction_ops = sum(
+                1 for operation in self.current_operations
+                if operation.get("op_family") == "reduction"
+            )
+            moe_routing_ops = sum(
+                1 for operation in self.current_operations
+                if operation.get("op_family") == "moe_routing"
+            )
+            rope_ops = sum(
+                1 for operation in self.current_operations
+                if operation.get("op_family") == "rope"
+            )
             operations = [
                 {"event_id": event_id, **operation}
                 for event_id, operation in enumerate(self.current_operations)
@@ -473,7 +748,7 @@ class RuntimeAIMCTracker:
                 {
                     "inference_id": len(self.inference_traces),
                     "prompt_index": self.current_prompt_index,
-                    "phase": "prefill",
+                    "phase": self.current_phase,
                     "input_shape": self.current_input_shapes,
                     "input_dtypes": self.current_input_dtypes,
                     "operations": operations,
@@ -486,6 +761,9 @@ class RuntimeAIMCTracker:
                         "static_weight_macs": static_weight_macs,
                         "dynamic_activation_macs": dynamic_activation_macs,
                         "nonlinear_element_ops": nonlinear_element_ops,
+                        "reduction_ops": reduction_ops,
+                        "moe_routing_ops": moe_routing_ops,
+                        "rope_ops": rope_ops,
                         "activation_bytes": self.current_activation_bytes,
                     },
                 }
