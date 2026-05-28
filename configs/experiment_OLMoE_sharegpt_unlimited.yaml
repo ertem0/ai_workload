@@ -1,0 +1,16 @@
+experiment_name: "OLMoE_profile_shareGPT_unlimited"
+model:
+  id: "allenai/OLMoE-1B-7B-0924-Instruct"
+  precision: "bf16"
+  prefer_safetensors: true # Fail fast on repos that only publish legacy .bin weights.
+  device: "cuda"
+
+dataset: ../datasets/sharegpt_prompts.json
+
+metrics:
+  calculate_expert_routing: true
+
+inference:
+  max_input_tokens: null   # null = no truncation
+  max_new_tokens: null     # null = no cap (until EOS or model context limit)
+

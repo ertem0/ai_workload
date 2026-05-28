@@ -4,7 +4,6 @@ import argparse
 import json
 import pickle
 import sys
-from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -17,10 +16,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Convert workload_trace.pkl into a readable JSON file."
     )
-    parser.add_argument(
-        "input_pickle",
-        help="Path to workload_trace.pkl.",
-    )
+    parser.add_argument("input_pickle", help="Path to workload_trace.pkl.")
     parser.add_argument(
         "--output",
         help="Optional output JSON path. Defaults to the input path with a .json suffix.",
@@ -33,104 +29,60 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def flatten_op(op: dict[str, Any], phase: str) -> dict[str, Any]:
-    """Collapse a nested operation record into the compact flat schema."""
-    op_type = op.get("op_type", "unknown")
-    inputs: list[dict[str, Any]] = op.get("inputs", [])
-    weights: list[dict[str, Any]] = op.get("weights", [])
-    outputs: list[dict[str, Any]] = op.get("outputs", [])
-
-    # input_shape — prefer structured inputs array, fall back to legacy flat field
-    if inputs:
-        input_shape = inputs[0].get("shape")
-    else:
-        raw = op.get("input_shape")
-        input_shape = list(raw) if raw is not None else None
-
-    # weight_shape — weights array for linear; rhs inputs[1] for dynamic matmul
-    if weights:
-        weight_shape = weights[0].get("shape")
-    elif op_type == "matmul" and len(inputs) >= 2:
-        weight_shape = inputs[1].get("shape")
-    else:
-        weight_shape = None
-
-    # output_shape
-    if outputs:
-        output_shape = outputs[0].get("shape")
-    else:
-        raw = op.get("output_shape")
-        output_shape = list(raw) if raw is not None else None
-
-    total_bytes = sum(
-        int(item.get("bytes", 0)) for item in inputs + weights + outputs
-    )
-    math = op.get("math", {})
-    flops = int(math.get("flops_estimate", 0))
-
-    return {
-        "event_id": op.get("event_id"),
-        "phase": phase,
-        "module": op.get("module"),
-        "op_type": op_type,
-        "op_family": op.get("op_family"),
-        "role": op.get("role"),
-        "input_shape": [int(d) for d in input_shape] if input_shape is not None else None,
-        "weight_shape": [int(d) for d in weight_shape] if weight_shape is not None else None,
-        "output_shape": [int(d) for d in output_shape] if output_shape is not None else None,
-        "flops": flops,
-        "bytes": total_bytes,
-    }
+def _product(shape: list[int]) -> int:
+    n = 1
+    for d in shape:
+        n *= int(d)
+    return n
 
 
-def reshape_inferences(inferences: list[Any]) -> list[Any]:
-    """Replace each inference's operations list with flat op records."""
-    reshaped = []
-    for inference in inferences:
-        if not isinstance(inference, dict):
-            reshaped.append(inference)
+def transform_trace(trace: Any) -> Any:
+    """
+    Normalize a workload trace so weights use numels (not bytes) and ops
+    carry weight_numels.
+
+    - weights[name]["bytes"] → weights[name]["numels"] = product(shape)
+    - ops[i]["weight_numels"] filled from inventory when missing
+    """
+    if not isinstance(trace, dict):
+        return trace
+
+    weights: dict[str, Any] = trace.get("weights", {})
+
+    for w in weights.values():
+        if not isinstance(w, dict):
             continue
-        phase = inference.get("phase", "prefill")
-        flat_ops = [
-            flatten_op(op, phase)
-            for op in inference.get("operations", [])
-            if isinstance(op, dict)
-        ]
-        reshaped.append({**inference, "operations": flat_ops})
-    return reshaped
+        if "numels" not in w and "shape" in w:
+            w["numels"] = _product(w["shape"])
+        w.pop("bytes", None)
+
+    for op in trace.get("ops", []):
+        if not isinstance(op, dict):
+            continue
+        if not op.get("weight_numels") and op.get("op_type") == "linear":
+            numel = weights.get(op.get("module", ""), {}).get("numels", 0)
+            if numel:
+                op["weight_numels"] = numel
+
+    return trace
 
 
 def normalize_for_json(value: Any) -> Any:
-    if is_dataclass(value):
-        return normalize_for_json(asdict(value))
-
     if isinstance(value, Path):
         return str(value)
-
     if isinstance(value, dict):
-        return {
-            str(normalize_for_json(key)): normalize_for_json(item)
-            for key, item in value.items()
-        }
-
+        return {str(normalize_for_json(k)): normalize_for_json(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set)):
-        return [normalize_for_json(item) for item in value]
-
+        return [normalize_for_json(v) for v in value]
     if hasattr(value, "detach") and hasattr(value, "cpu"):
         tensor = value.detach().cpu()
-        if tensor.ndim == 0:
-            return normalize_for_json(tensor.item())
-        return normalize_for_json(tensor.tolist())
-
+        return normalize_for_json(tensor.item() if tensor.ndim == 0 else tensor.tolist())
     if hasattr(value, "tolist"):
         return normalize_for_json(value.tolist())
-
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
-
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
-
     return str(value)
 
 
@@ -138,26 +90,19 @@ def main() -> None:
     args = parse_args()
     input_path = Path(args.input_pickle).resolve()
     output_path = (
-        Path(args.output).resolve()
-        if args.output
-        else input_path.with_suffix(".json")
+        Path(args.output).resolve() if args.output else input_path.with_suffix(".json")
     )
 
     with input_path.open("rb") as handle:
         payload = pickle.load(handle)
 
-    if isinstance(payload, dict) and "inferences" in payload:
-        payload = {**payload, "inferences": reshape_inferences(payload["inferences"])}
-
-    serializable_payload = normalize_for_json(payload)
+    payload = transform_trace(payload)
+    serializable = normalize_for_json(payload)
     json_kwargs: dict[str, Any] = {"ensure_ascii": False}
     if not args.compact:
         json_kwargs["indent"] = 2
 
-    output_path.write_text(
-        json.dumps(serializable_payload, **json_kwargs),
-        encoding="utf-8",
-    )
+    output_path.write_text(json.dumps(serializable, **json_kwargs), encoding="utf-8")
     print(f"Wrote JSON workload trace to {output_path}")
 
 

@@ -1,11 +1,11 @@
-experiment_name: "minicpm_profile_single"
+experiment_name: "gemma4_E2B"
 model:
-  id: "openbmb/MiniCPM-MoE-8x2B"
-  top_k: 2 # The default. You can sweep 1, 2, 4, 8.
-  precision: "fp16"
+  id: "google/gemma-4-E2B-it"
+  precision: "bf16"
   prefer_safetensors: true # Fail fast on repos that only publish legacy .bin weights.
+  device: "cuda"
 
-dataset:
+dataset: 
   - "Write a Python function to remove duplicate values from a list while preserving the original order. Include type hints."
   - "Explain how a hash table works, then provide a short Python example that uses a dictionary to count word frequencies."
   - "Write a Python function that checks whether a string is a palindrome, ignoring spaces and capitalization, and explain the time complexity."
@@ -23,5 +23,11 @@ dataset:
   - "A student drops a ball from a balcony. Explain how gravity and air resistance affect the motion as it falls."
   
 metrics:
-  calculate_expert_routing: true
+  calculate_expert_routing: false
 
+inference:
+  use_chat_template: true
+
+inference:
+  max_input_tokens: null   # null = no truncation
+  max_new_tokens: 1028

@@ -9,8 +9,9 @@ import torch
 from src.plotting.expert_heatmaps import (
     generate_individual_spatial_heatmaps,
     generate_layer_transition_heatmaps,
-    plot_transition_umap,
     plot_expert_load_and_entropy,
+    plot_expert_zipf,
+    plot_transition_umap,
     save_expert_heatmap_plot,
 )
 from src.tracing.routing_trace import RoutingTraceRecord, load_routing_trace
@@ -134,7 +135,7 @@ def _build_layer_transition_statistics(
     return transitions
 
 
-def _build_expert_routing_statistics(routing_trace: dict[int, list[RoutingTraceRecord]]) -> dict[str, Any]:
+def _build_expert_routing_statistics(routing_trace: dict[int, list[RoutingTraceRecord]], top_k: int = 1) -> dict[str, Any]:
     num_routed_experts = _infer_num_routed_experts(routing_trace)
     layer_names = sorted(
         {
@@ -300,12 +301,13 @@ def _build_expert_routing_statistics(routing_trace: dict[int, list[RoutingTraceR
         if dominant_layer_count == 0:
             continue
 
+        n_routing_steps = max(dominant_layer_total_assignments // max(top_k, 1), 1)
         top_experts.append(
             {
                 "expert_id": expert_id,
                 "probability": (
-                    float(dominant_layer_count / dominant_layer_total_assignments)
-                    if dominant_layer_total_assignments > 0
+                    float(dominant_layer_count / n_routing_steps)
+                    if n_routing_steps > 0
                     else 0.0
                 ),
                 "dominant_layer_name": dominant_layer_name,
@@ -313,6 +315,7 @@ def _build_expert_routing_statistics(routing_trace: dict[int, list[RoutingTraceR
                 "dominant_layer_count": dominant_layer_count,
                 "dominant_layer_events": dominant_layer_events,
                 "dominant_layer_total_assignments": dominant_layer_total_assignments,
+                "dominant_layer_routing_steps": n_routing_steps,
             }
         )
 
@@ -380,16 +383,16 @@ def _print_single_expert_summary(
 ) -> None:
     print("Single expert usage")
     print(
-        "   P(Ei | layer) = expert activation count divided by the total number "
-        "of expert assignments in that layer."
+        "   P(Ei | layer) = expert activation count divided by the number of routing steps in that layer."
     )
     if not top_experts:
         print("   No expert activations were collected in the traced workload.")
         return
     for expert in top_experts[:15]:
+        n_steps = expert.get("dominant_layer_routing_steps") or expert.get("dominant_layer_total_assignments", 0)
         calculation = (
-            f"{expert['dominant_layer_count']}/{expert['dominant_layer_total_assignments']}"
-            if expert.get("dominant_layer_total_assignments", 0) > 0
+            f"{expert['dominant_layer_count']}/{n_steps}"
+            if n_steps > 0
             else "0/0"
         )
         layer_suffix = (
@@ -478,7 +481,7 @@ def run_expert_routing_analysis(
         if output_token_count is not None
         else int(metadata.get("output_token_count", 0))
     )
-    stats = _build_expert_routing_statistics(routing_trace)
+    stats = _build_expert_routing_statistics(routing_trace, top_k=configured_top_k)
     results = stats["results"]
 
     if not results:
@@ -557,9 +560,17 @@ def run_expert_routing_analysis(
         flat_records,
         analysis_output_dir,
         stats["num_routed_experts"],
+        top_k=configured_top_k,
     )
     if load_entropy_path is not None:
         print(f"Saved load/entropy plot       : {load_entropy_path}")
+    zipf_path = plot_expert_zipf(
+        layer_expert_matrix=stats["layer_expert_matrix"],
+        layer_names=stats["layer_names"],
+        output_dir=analysis_output_dir,
+    )
+    if zipf_path is not None:
+        print(f"Saved expert Zipf plot        : {zipf_path}")
     print("-" * 96)
     _print_single_expert_summary(
         top_experts=stats["top_experts"],

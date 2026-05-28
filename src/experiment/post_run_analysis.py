@@ -17,7 +17,8 @@ def run_enabled_post_analysis(
     run_summary: dict[str, Any],
     output_dir: Path,
 ) -> None:
-    if not expert_routing_enabled(config_dict):
+    metrics_cfg = config_dict["metrics"]
+    if not bool(metrics_cfg.get("analyze_expert_routing", False)):
         return
 
     raw_trace_path = run_summary.get("raw_trace_path")

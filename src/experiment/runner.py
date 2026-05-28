@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import time
 from typing import Any
@@ -35,6 +36,53 @@ def set_trackers_enabled(
         runtime_aimc_tracker.set_enabled(enabled)
 
 
+def should_use_chat_template(
+    model_info: dict[str, Any],
+    tokenizer: Any,
+    inference_cfg: dict[str, Any],
+) -> bool:
+    """Use chat formatting automatically for instruction models that need it."""
+
+    configured = inference_cfg.get("use_chat_template")
+    if configured is not None:
+        return bool(configured)
+
+    model_id = str(model_info.get("model_id", "")).lower()
+    chat_template_model = "gemma" in model_id or "olmoe" in model_id
+    return chat_template_model and bool(getattr(tokenizer, "chat_template", None))
+
+
+def encode_prompt(
+    tokenizer: Any,
+    prompt: str,
+    *,
+    max_input_tokens: int | None,
+    use_chat_template: bool,
+) -> dict[str, torch.Tensor]:
+    if use_chat_template:
+        rendered_prompt = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        return tokenizer(
+            rendered_prompt,
+            return_tensors="pt",
+            truncation=max_input_tokens is not None,
+            max_length=max_input_tokens,
+            padding=False,
+            add_special_tokens=False,
+        )
+
+    return tokenizer(
+        prompt,
+        return_tensors="pt",
+        truncation=max_input_tokens is not None,
+        max_length=max_input_tokens,
+        padding=False,
+    )
+
+
 def run_experiment(config_dict: dict[str, Any], output_dir: Path) -> dict[str, Any]:
     log_step(f"Experiment: {config_dict['experiment_name']}", phase="setup")
     log_step(f"Results directory: {output_dir.resolve()}", phase="setup")
@@ -45,17 +93,20 @@ def run_experiment(config_dict: dict[str, Any], output_dir: Path) -> dict[str, A
 
     expert_routing_tracker: ExpertRoutingTracker | None = None
     if expert_routing_enabled(config_dict):
-        log_step("Initializing expert routing tracker.", phase="tracker")
-        expert_routing_tracker = ExpertRoutingTracker(
-            model=model,
-            top_k=int(config_dict["model"]["top_k"]),
-        )
-        expert_routing_tracker.register_hooks()
-        log_step(
-            f"Expert routing hooks registered on "
-            f"{len(expert_routing_tracker.handles)} gate modules.",
-            phase="tracker",
-        )
+        if not model_info.get("is_moe", False):
+            log_step("Skipping expert routing tracker — model is not MoE.", phase="tracker")
+        else:
+            log_step("Initializing expert routing tracker.", phase="tracker")
+            expert_routing_tracker = ExpertRoutingTracker(
+                model=model,
+                top_k=int(model_info["configured_top_k"]),
+            )
+            expert_routing_tracker.register_hooks()
+            log_step(
+                f"Expert routing hooks registered on "
+                f"{len(expert_routing_tracker.handles)} gate modules.",
+                phase="tracker",
+            )
 
     runtime_aimc_tracker: RuntimeAIMCTracker | None = None
     aimc_metric_flags = (
@@ -93,7 +144,16 @@ def run_experiment(config_dict: dict[str, Any], output_dir: Path) -> dict[str, A
 
     prompts = config_dict["dataset"]
     inference_cfg = config_dict.get("inference", {})
-    max_new_tokens = int(inference_cfg.get("max_new_tokens", 64))
+    _raw_max_new = inference_cfg.get("max_new_tokens", 64)
+    max_new_tokens = None if _raw_max_new is None else int(_raw_max_new)
+    _raw_max_in = inference_cfg.get("max_input_tokens", 256)
+    max_input_tokens = None if _raw_max_in is None else int(_raw_max_in)
+    use_chat_template = should_use_chat_template(model_info, tokenizer, inference_cfg)
+    generation_eos_token_id = getattr(model.generation_config, "eos_token_id", None)
+    if generation_eos_token_id is None:
+        generation_eos_token_id = tokenizer.eos_token_id
+    if use_chat_template:
+        log_step("Using tokenizer chat template for prompt formatting.", phase="inference")
     total_input_tokens = 0
     total_output_tokens = 0
     inference_outputs: list[dict[str, str]] = []
@@ -106,12 +166,11 @@ def run_experiment(config_dict: dict[str, Any], output_dir: Path) -> dict[str, A
         inference_start_time = time.perf_counter()
         for prompt_index, prompt in enumerate(prompts, start=1):
             log_step(f"Tokenizing prompt {prompt_index}/{len(prompts)}.", phase="prompt")
-            encoded = tokenizer(
+            encoded = encode_prompt(
+                tokenizer,
                 prompt,
-                return_tensors="pt",
-                truncation=True,
-                max_length=256,
-                padding=False,
+                max_input_tokens=max_input_tokens,
+                use_chat_template=use_chat_template,
             )
 
             encoded = {
@@ -136,6 +195,7 @@ def run_experiment(config_dict: dict[str, Any], output_dir: Path) -> dict[str, A
                 runtime_aimc_tracker.start_prompt(
                     prompt_index=prompt_index,
                     batch=encoded,
+                    phase="prefill",
                 )
             with torch.inference_mode():
                 model(**encoded)
@@ -178,16 +238,19 @@ def run_experiment(config_dict: dict[str, Any], output_dir: Path) -> dict[str, A
                     batch=encoded,
                     phase="decode",
                 )
+            generate_kwargs: dict[str, Any] = dict(
+                input_ids=encoded["input_ids"],
+                attention_mask=encoded.get("attention_mask"),
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                use_cache=True,
+                pad_token_id=tokenizer.pad_token_id,
+            )
+            if generation_eos_token_id is not None:
+                generate_kwargs["eos_token_id"] = generation_eos_token_id
             try:
                 with torch.inference_mode():
-                    generated = model.generate(
-                        **encoded,
-                        max_new_tokens=max_new_tokens,
-                        do_sample=False,
-                        use_cache=True,
-                        pad_token_id=tokenizer.pad_token_id,
-                        eos_token_id=tokenizer.eos_token_id,
-                    )
+                    generated = model.generate(**generate_kwargs)
             finally:
                 if runtime_aimc_tracker is not None:
                     runtime_aimc_tracker.finish_prompt()
@@ -228,6 +291,9 @@ def run_experiment(config_dict: dict[str, Any], output_dir: Path) -> dict[str, A
             phase="inference",
         )
     finally:
+        inference_output_path = output_dir / "inference_outputs.json"
+        inference_output_path.write_text(json.dumps(inference_outputs, indent=2, ensure_ascii=False))
+        log_step(f"Saved inference outputs to {inference_output_path.resolve()}.", phase="trace")
         if workload_trace_enabled:
             workload_trace_path = export_workload_trace(
                 output_path=output_dir / "workload_trace.pkl",

@@ -228,32 +228,19 @@ class ExpertRoutingTracker:
         return export_routing_trace_json(self.routing_trace, output_path, metadata)
 
     def _infer_num_routed_experts(self) -> int:
-        """
-        Infer the number of routed experts from the loaded model config.
-
-        For Qwen/Qwen1.5-MoE-A2.7B, this is 60 routed experts. Shared experts
-        are not part of the routed top-k histogram and are intentionally ignored.
-        """
-
         config = getattr(self.model, "config", None)
-        num_experts = int(getattr(config, "num_experts", 0))
-        if num_experts <= 0:
-            raise ValueError(
-                "Unable to determine the number of routed experts from model.config."
-            )
-        return num_experts
+        for attr in ("num_experts", "num_local_experts", "n_routed_experts", "num_routed_experts"):
+            val = int(getattr(config, attr, 0))
+            if val > 0:
+                return val
+        raise ValueError(
+            "Unable to determine the number of routed experts from model.config. "
+            "Tried: num_experts, num_local_experts, n_routed_experts, num_routed_experts."
+        )
 
     def _is_router_gate(self, module_name: str, module: nn.Module) -> bool:
-        """
-        Identify Qwen MoE gate modules robustly.
-
-        We accept either:
-        - a plain `nn.Linear` named `gate` that outputs logits over routed experts
-        - a dedicated router module named `gate` that stores router metadata
-        """
-
         leaf_name = module_name.rsplit(".", maxsplit=1)[-1]
-        if leaf_name != "gate":
+        if leaf_name not in ("gate", "router", "gate_proj") or "experts" in module_name:
             return False
 
         if (
@@ -370,7 +357,11 @@ class ExpertRoutingTracker:
             )
 
         if not self.handles:
-            raise RuntimeError("No Qwen MoE gate layers were found for expert routing tracking.")
+            raise RuntimeError(
+                "No MoE router gate layers were found. "
+                "Expected Linear modules named 'gate' or 'router' with "
+                f"out_features={self.num_routed_experts}."
+            )
 
     def set_enabled(self, enabled: bool) -> None:
         self.enabled = enabled
@@ -534,7 +525,15 @@ class ExpertRoutingTracker:
         print("=" * 96)
         trace_path = self.export_routing_trace(output_dir / "routing_trace.pkl")
         print(f"Saved routing trace           : {trace_path}")
-        from src.plotting.expert_heatmaps import save_expert_heatmap_plot
+        from src.plotting.expert_heatmaps import plot_expert_zipf, save_expert_heatmap_plot
+
+        zipf_path = plot_expert_zipf(
+            layer_expert_matrix=expert_centric_results["layer_expert_matrix"],
+            layer_names=expert_centric_results["layer_names"],
+            output_dir=output_dir,
+        )
+        if zipf_path is not None:
+            print(f"Saved expert Zipf plot        : {zipf_path}")
 
         heatmap_path = save_expert_heatmap_plot(
             layer_expert_matrix=expert_centric_results["layer_expert_matrix"],

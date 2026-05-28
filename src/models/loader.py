@@ -5,7 +5,7 @@ from typing import Any
 import torch
 
 try:
-    from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
     from transformers.cache_utils import Cache, DynamicCache
 except ImportError as exc:  # pragma: no cover - runtime dependency guard
     raise SystemExit(
@@ -17,6 +17,8 @@ except ImportError as exc:  # pragma: no cover - runtime dependency guard
 PRECISION_MAP = {
     "fp16": torch.float16,
     "float16": torch.float16,
+    "bf16": torch.bfloat16,
+    "bfloat16": torch.bfloat16,
     "fp32": torch.float32,
     "float32": torch.float32,
 }
@@ -66,6 +68,20 @@ def _resolve_device(device_name: str | None) -> str:
             f"Unsupported device '{device_name}'. Use 'cpu', 'cuda', 'cuda:N', or 'gpu'."
         )
     return str(device)
+
+
+def _build_bnb_config(quantization: str, compute_dtype: torch.dtype) -> BitsAndBytesConfig:
+    q = quantization.lower()
+    if q == "4bit":
+        return BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=compute_dtype,
+            bnb_4bit_use_double_quant=True,
+        )
+    if q == "8bit":
+        return BitsAndBytesConfig(load_in_8bit=True)
+    raise ValueError(f"Unsupported quantization '{quantization}'. Use '4bit' or '8bit'.")
 
 
 def _normalize_max_memory(max_memory: Any) -> dict[Any, str] | None:
@@ -179,8 +195,14 @@ def load_model_and_tokenizer(config_dict: dict[str, Any]) -> tuple[Any, Any, dic
 
     model_cfg = config_dict["model"]
     model_id = model_cfg["id"]
-    top_k = int(model_cfg["top_k"])
-    model_dtype = _resolve_precision(model_cfg["precision"])
+    top_k = int(model_cfg["top_k"]) if "top_k" in model_cfg else None
+    gguf_file: str | None = model_cfg.get("gguf_file")
+    quantization: str | None = model_cfg.get("quantization")
+    precision_name = model_cfg.get("precision")
+    if precision_name is not None:
+        model_dtype = _resolve_precision(precision_name)
+    else:
+        model_dtype = "auto"
     execution_device = _resolve_device(model_cfg.get("device", "cpu"))
     max_memory = _normalize_max_memory(model_cfg.get("max_memory"))
     offload_folder = model_cfg.get("offload_folder")
@@ -188,24 +210,33 @@ def load_model_and_tokenizer(config_dict: dict[str, Any]) -> tuple[Any, Any, dic
 
     _patch_transformers_cache_compatibility()
 
-    _log_step(f"Loading config for {model_id}.")
-    config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
-    if not hasattr(config, "num_experts_per_tok"):
-        raise ValueError(
-            f"Model config for {model_id} does not expose 'num_experts_per_tok'."
-        )
+    _log_step(f"Loading config for {model_id}{'  [GGUF: ' + gguf_file + ']' if gguf_file else ''}.")
+    config_kwargs: dict[str, Any] = {"trust_remote_code": True}
+    if gguf_file:
+        config_kwargs["gguf_file"] = gguf_file
+    config = AutoConfig.from_pretrained(model_id, **config_kwargs)
+    is_moe = hasattr(config, "num_experts_per_tok")
 
-    # Preserve the checkpoint default so reports can display both the original
-    # and the experiment-overridden top-k values.
-    config.original_num_experts_per_tok = int(config.num_experts_per_tok)
+    if is_moe:
+        config.original_num_experts_per_tok = int(config.num_experts_per_tok)
+        if top_k is not None:
+            config.num_experts_per_tok = top_k
+        else:
+            top_k = int(config.num_experts_per_tok)
+        _log_step(f"Config loaded (MoE). num_experts_per_tok={top_k}.")
+    else:
+        if top_k is not None:
+            _log_step(f"Config loaded (dense). 'top_k' in config is ignored for non-MoE models.")
+        else:
+            _log_step("Config loaded (dense).")
 
-    # Override the MoE router fan-out before the checkpoint weights are loaded.
-    config.num_experts_per_tok = top_k
     config.use_cache = False
-    _log_step(f"Config loaded. Overriding num_experts_per_tok to {top_k}.")
 
     _log_step("Loading tokenizer.")
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+    tokenizer_kwargs: dict[str, Any] = {"trust_remote_code": True}
+    if gguf_file:
+        tokenizer_kwargs["gguf_file"] = gguf_file
+    tokenizer = AutoTokenizer.from_pretrained(model_id, **tokenizer_kwargs)
     if tokenizer.pad_token is None and tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -221,6 +252,11 @@ def load_model_and_tokenizer(config_dict: dict[str, Any]) -> tuple[Any, Any, dic
         "low_cpu_mem_usage": True,
         "use_safetensors": prefer_safetensors,
     }
+    if gguf_file:
+        load_kwargs["gguf_file"] = gguf_file
+        load_kwargs.pop("use_safetensors", None)
+    if quantization:
+        load_kwargs["quantization_config"] = _build_bnb_config(quantization, model_dtype)
     if max_memory is not None:
         load_kwargs["max_memory"] = max_memory
     if offload_folder is not None:
@@ -260,8 +296,9 @@ def load_model_and_tokenizer(config_dict: dict[str, Any]) -> tuple[Any, Any, dic
 
     model_info = {
         "model_id": model_id,
+        "is_moe": is_moe,
         "configured_top_k": top_k,
-        "original_top_k": int(getattr(config, "original_num_experts_per_tok", top_k)),
+        "original_top_k": int(getattr(config, "original_num_experts_per_tok", top_k or 0)),
         "routed_experts": int(getattr(config, "num_experts", 0)),
         "execution_device": execution_device,
         "input_device": _first_parameter_device(model),

@@ -60,6 +60,82 @@ def save_expert_heatmap_plot(
     return output_path
 
 
+def plot_expert_zipf(
+    layer_expert_matrix: torch.Tensor,
+    layer_names: list[str],
+    output_dir: Path | str,
+) -> Path | None:
+    """
+    Zipf (rank–frequency) plot of expert activation counts per layer.
+
+    Each layer is one line on a shared log-log axes, coloured by layer index.
+    A log-log linear fit gives the power-law exponent α (count ∝ rank^-α);
+    steeper α means stronger specialisation / skew.
+    """
+    if layer_expert_matrix.numel() == 0:
+        return None
+
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except ImportError:
+        print("[EXPERT_ROUTING] matplotlib/numpy not available. Skipping Zipf plot.")
+        return None
+
+    matrix = layer_expert_matrix.to(torch.float64).numpy()  # (n_layers, n_experts)
+    n_layers, n_experts = matrix.shape
+    ranks = np.arange(1, n_experts + 1, dtype=np.float64)
+
+    cmap = plt.cm.get_cmap("viridis", max(n_layers, 1))
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    for layer_idx, (counts_row, layer_name) in enumerate(zip(matrix, layer_names)):
+        sorted_counts = np.sort(counts_row)[::-1]
+        nonzero_mask = sorted_counts > 0
+        if not np.any(nonzero_mask):
+            continue
+
+        color = cmap(layer_idx / max(n_layers - 1, 1))
+        ax.loglog(ranks, sorted_counts, "-", color=color, linewidth=1.2, alpha=0.7)
+
+        # Power-law fit in log-log space: log(count) = -α * log(rank) + c
+        valid_counts = sorted_counts[nonzero_mask]
+        valid_ranks = ranks[nonzero_mask]
+        if len(valid_counts) >= 2:
+            slope, _ = np.polyfit(np.log(valid_ranks), np.log(valid_counts), 1)
+            alpha = -slope
+            ax.loglog(
+                ranks[nonzero_mask],
+                sorted_counts[nonzero_mask],
+                ".",
+                color=color,
+                markersize=3,
+                alpha=0.0,
+                label=f"{layer_name}  α={alpha:.2f}",
+            )
+        else:
+            ax.loglog([], [], color=color, label=layer_name)
+
+    # Add invisible proxy for the colorbar-style legend header
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(0, max(n_layers - 1, 1)))
+    sm.set_array([])
+    fig.colorbar(sm, ax=ax, label="Layer index", fraction=0.03, pad=0.02)
+
+    ax.set_xlabel("Expert rank (by activation frequency)")
+    ax.set_ylabel("Activation count")
+    ax.set_title("Expert Activation Zipf Plot — all layers")
+    ax.legend(fontsize=7, ncol=max(1, n_layers // 8), loc="upper right")
+    ax.grid(True, which="both", linestyle=":", linewidth=0.6, alpha=0.4)
+
+    fig.tight_layout()
+    output_path = Path(output_dir) / "expert_zipf.png"
+    fig.savefig(output_path, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
 def generate_individual_spatial_heatmaps(
     records: list[RoutingTraceRecord],
     base_output_dir: Path | str,
@@ -385,6 +461,7 @@ def plot_expert_load_and_entropy(
     records: list[RoutingTraceRecord],
     output_dir: Path | str,
     num_experts: int,
+    top_k: int = 1,
 ) -> Path | None:
     if num_experts <= 0:
         print("[EXPERT_ROUTING] Invalid expert count. Skipping expert load and entropy plot.")
@@ -423,7 +500,21 @@ def plot_expert_load_and_entropy(
                 load_matrix[record.layer_id, expert_index] += 1.0
 
     row_sums = load_matrix.sum(axis=1, keepdims=True)
+    n_routing_steps = np.divide(
+        row_sums,
+        max(top_k, 1),
+        out=np.ones_like(row_sums),
+        where=row_sums > 0,
+    )
+    # Heatmap: P(Ei | layer) = activations / routing_steps  (sums to top_k, range [0,1])
     normalized_matrix = np.divide(
+        load_matrix,
+        n_routing_steps,
+        out=np.zeros_like(load_matrix),
+        where=n_routing_steps > 0,
+    )
+    # Entropy: use total-assignments normalisation so distribution sums to 1
+    prob_for_entropy = np.divide(
         load_matrix,
         row_sums,
         out=np.zeros_like(load_matrix),
@@ -432,7 +523,7 @@ def plot_expert_load_and_entropy(
 
     entropy_values = np.zeros(num_layers, dtype=np.float64)
     for layer_id in range(num_layers):
-        probabilities = normalized_matrix[layer_id]
+        probabilities = prob_for_entropy[layer_id]
         nonzero_probabilities = probabilities[probabilities > 0.0]
         if nonzero_probabilities.size == 0:
             continue
@@ -455,7 +546,7 @@ def plot_expert_load_and_entropy(
         cmap="magma",
         vmin=0.0,
         vmax=heatmap_max if heatmap_max > 0.0 else 1.0,
-        cbar_kws={"label": "Activation probability"},
+        cbar_kws={"label": "P(Ei | layer) = activations / routing steps"},
     )
     ax_heat.set_title("Expert Load Heatmap", pad=14)
     ax_heat.set_xlabel("Expert ID")

@@ -1,11 +1,11 @@
-experiment_name: "OLMoE_profile_maths"
+experiment_name: "OLMoE_profile_coding"
 model:
   id: "allenai/OLMoE-1B-7B-0924-Instruct"
   precision: "bf16"
   prefer_safetensors: true # Fail fast on repos that only publish legacy .bin weights.
   device: "cuda"
 
-dataset: ../datasets/gsm8k_prompts.json
+dataset: ../datasets/codesearchnet_prompts.json
 
 metrics:
   calculate_expert_routing: true

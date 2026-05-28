@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pickle
-from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -18,187 +17,151 @@ from src.metrics.expert_routing_tracker import ExpertRoutingTracker
 from src.metrics.runtime_aimc_tracker import RuntimeAIMCTracker
 
 
-TRACE_SCHEMA_VERSION = 1
+TRACE_SCHEMA_VERSION = 2
 
 
-def tensor_nbytes(tensor: torch.Tensor) -> int:
-    return tensor.numel() * tensor.element_size()
+def _is_olmoe_experts_module(module: nn.Module) -> bool:
+    """Detect OlmoeExperts-style batched expert blocks (3D Parameter tensors, not nn.Linear)."""
+    gate_up = getattr(module, "gate_up_proj", None)
+    down = getattr(module, "down_proj", None)
+    return (
+        isinstance(gate_up, torch.nn.Parameter) and gate_up.dim() == 3
+        and isinstance(down, torch.nn.Parameter) and down.dim() == 3
+    )
 
 
-def module_class_inventory(model: nn.Module) -> dict[str, dict[str, Any]]:
-    modules: dict[str, dict[str, Any]] = {}
-    module_parameter_refs: dict[str, list[str]] = {}
-
-    for parameter_name, _ in model.named_parameters():
-        module_name, _, _ = parameter_name.rpartition(".")
-        module_parameter_refs.setdefault(module_name, []).append(parameter_name)
-
-    for module_name, module in model.named_modules():
-        if module_name == "":
-            continue
-        modules[module_name] = {
-            "class": module.__class__.__name__,
-            "role": classify_static_matrix(module_name)
-            if isinstance(module, nn.Linear)
-            else "module",
-            "parameter_refs": module_parameter_refs.get(module_name, []),
-        }
-
-    return modules
+def _is_olmoe_router_module(module: nn.Module) -> bool:
+    """Detect OlmoeTopKRouter-style modules (2D Parameter weight, not nn.Linear)."""
+    if isinstance(module, nn.Linear):
+        return False
+    weight = getattr(module, "weight", None)
+    return (
+        isinstance(weight, torch.nn.Parameter)
+        and weight.dim() == 2
+        and hasattr(module, "top_k")
+        and hasattr(module, "num_experts")
+    )
 
 
-def collect_parameter_inventory(model: nn.Module) -> dict[str, dict[str, Any]]:
-    parameters: dict[str, dict[str, Any]] = {}
-    module_by_parameter = {
-        parameter_name: parameter_name.rpartition(".")[0]
-        for parameter_name, _ in model.named_parameters()
-    }
+# ─── Static inventory ────────────────────────────────────────────────────────
 
-    for parameter_name, parameter in model.named_parameters():
-        module_name = module_by_parameter[parameter_name]
-        parameters[parameter_name] = {
-            "kind": "parameter",
-            "module": module_name,
-            "tensor_name": parameter_name.rpartition(".")[2],
-            "shape": tuple(parameter.shape),
-            "dtype": str(parameter.dtype),
-            "numel": parameter.numel(),
-            "bytes": tensor_nbytes(parameter),
-            "requires_grad": bool(parameter.requires_grad),
-            "trainable": bool(parameter.requires_grad),
-            "static_during_inference": True,
-            "role": classify_static_matrix(module_name),
-        }
-
-    return parameters
-
-
-def collect_buffer_inventory(model: nn.Module) -> dict[str, dict[str, Any]]:
-    buffers: dict[str, dict[str, Any]] = {}
-
-    for module_name, module in model.named_modules():
-        for local_name, buffer in module.named_buffers(recurse=False):
-            buffer_name = f"{module_name}.{local_name}" if module_name else local_name
-            buffers[buffer_name] = {
-                "kind": "buffer",
-                "module": module_name,
-                "tensor_name": local_name,
-                "shape": tuple(buffer.shape),
-                "dtype": str(buffer.dtype),
-                "numel": buffer.numel(),
-                "bytes": tensor_nbytes(buffer),
-                "persistent": local_name not in module._non_persistent_buffers_set,
-                "static_during_inference": True,
-            }
-
-    return buffers
-
-
-def build_static_matrix_inventory(
+def build_weights_inventory(
     model: nn.Module,
     crossbar_size: tuple[int, int],
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+) -> dict[str, dict[str, Any]]:
+    """One entry per weight matrix (nn.Linear or OLMoE batched expert) with shape, role and tiling."""
     tiling_metrics = calculate_tiling_efficiency(model, crossbar_size)
-    matrices: list[dict[str, Any]] = []
+    tile_map = {m["name"]: m for m in tiling_metrics["matrices"]}
 
-    module_map = dict(model.named_modules())
-    for matrix in tiling_metrics["matrices"]:
-        module_name = matrix["name"]
-        module = module_map[module_name]
-        weight = module.weight
-        rows, cols = matrix["shape"]
-        matrices.append(
-            {
-                "matrix_id": f"{module_name}.weight",
-                "module": module_name,
-                "role": matrix["role"],
-                "shape": matrix["shape"],
-                "dtype": str(weight.dtype),
-                "rows": rows,
-                "cols": cols,
-                "static_during_inference": True,
-                "crossbar": {
-                    "tile_shape": crossbar_size,
-                    "tiles": matrix["tiles"],
-                    "used_cells": matrix["used_cells"],
-                    "provisioned_cells": matrix["provisioned_cells"],
-                    "tiling_efficiency": matrix["tiling_efficiency"],
-                },
+    weights: dict[str, dict[str, Any]] = {}
+    for module_name, module in model.named_modules():
+        if isinstance(module, nn.Linear):
+            w = module.weight
+            t = tile_map.get(module_name, {})
+            weights[module_name] = {
+                "shape":             list(w.shape),
+                "dtype":             str(w.dtype),
+                "numels":            w.numel(),
+                "role":              classify_static_matrix(module_name),
+                "tiles":             t.get("tiles"),
+                "used_cells":        t.get("used_cells"),
+                "provisioned_cells": t.get("provisioned_cells"),
+                "tile_efficiency":   t.get("tiling_efficiency"),
             }
-        )
+        elif _is_olmoe_router_module(module):
+            w = module.weight  # (num_experts, hidden_dim)
+            weights[module_name] = {
+                "shape":             list(w.shape),
+                "dtype":             str(w.dtype),
+                "numels":            w.numel(),
+                "role":              classify_static_matrix(module_name),
+                "tiles":             None,
+                "used_cells":        None,
+                "provisioned_cells": None,
+                "tile_efficiency":   None,
+            }
+        elif _is_olmoe_experts_module(module):
+            # OlmoeExperts stores weights as 3D Parameters; emit one virtual entry
+            # per expert per projection so the trace matches how ops are recorded.
+            gate_up = module.gate_up_proj  # (num_experts, 2*inter, hidden)
+            down = module.down_proj        # (num_experts, hidden, inter)
+            num_experts = int(gate_up.shape[0])
+            intermediate_size = int(gate_up.shape[1]) // 2
+            hidden_size = int(gate_up.shape[2])
+            dtype = str(gate_up.dtype)
+            for expert_id in range(num_experts):
+                for proj, shape in (
+                    ("gate_proj", (intermediate_size, hidden_size)),
+                    ("up_proj",   (intermediate_size, hidden_size)),
+                    ("down_proj", (hidden_size, intermediate_size)),
+                ):
+                    vname = f"{module_name}.{expert_id}.{proj}"
+                    weights[vname] = {
+                        "shape":             list(shape),
+                        "dtype":             dtype,
+                        "numels":            shape[0] * shape[1],
+                        "role":              "expert_ffn",
+                        "tiles":             None,
+                        "used_cells":        None,
+                        "provisioned_cells": None,
+                        "tile_efficiency":   None,
+                    }
+    return weights
 
-    return matrices, tiling_metrics
 
+# ─── Op flattening ───────────────────────────────────────────────────────────
 
-def serialize_routing_trace(
-    expert_routing_tracker: ExpertRoutingTracker | None,
-) -> dict[int, list[dict[str, Any]]]:
-    if expert_routing_tracker is None:
-        return {}
+def flatten_ops(inferences: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Convert nested inference_traces into a flat op list.
 
-    serialized: dict[int, list[dict[str, Any]]] = {}
-    for prompt_index, records in expert_routing_tracker.routing_trace.items():
-        serialized[prompt_index] = [
-            asdict(record) if is_dataclass(record) else dict(record)
-            for record in records
-        ]
-    return serialized
-
-
-def attach_routing_to_inferences(
-    inferences: list[dict[str, Any]],
-    routing_trace: dict[int, list[dict[str, Any]]],
-) -> list[dict[str, Any]]:
-    enriched: list[dict[str, Any]] = []
+    Each op gets:
+      seq_id        — which input sequence (prompt_index or inference_id)
+      phase         — "prefill" or "decode"
+      input_numels  — activation input element count (weight numels are in weights{})
+      weight_numels — weight element count for this call (fixed per module)
+      output_numels — output activation element count
+    """
+    ops: list[dict[str, Any]] = []
     for inference in inferences:
-        copied = dict(inference)
-        prompt_index = copied.get("prompt_index")
-        copied["routing"] = routing_trace.get(prompt_index, [])
-        enriched.append(copied)
-    return enriched
+        phase  = inference.get("phase", "prefill")
+        seq_id = inference.get("prompt_index", inference.get("inference_id", 0))
+        for op in inference.get("operations", []):
+            if not isinstance(op, dict):
+                continue
+            math_info = op.get("math", {})
+            raw_inputs  = op.get("inputs",  [])
+            raw_weights = op.get("weights", [])
+            raw_outputs = op.get("outputs", [])
+
+            input_shape  = list(raw_inputs[0]["shape"])  if raw_inputs  and raw_inputs[0].get("shape")  else None
+            output_shape = list(raw_outputs[0]["shape"]) if raw_outputs and raw_outputs[0].get("shape") else None
+
+            input_numels  = sum(int(i.get("numels", 0)) for i in raw_inputs)
+            weight_numels = sum(int(w.get("numels", 0)) for w in raw_weights)
+            output_numels = sum(int(o.get("numels", 0)) for o in raw_outputs)
+
+            if input_numels == 0 and output_numels == 0:
+                continue
+
+            ops.append({
+                "seq_id":       seq_id,
+                "phase":        phase,
+                "module":       op.get("module", ""),
+                "op_type":      op.get("op_type", "unknown"),
+                "op_family":    op.get("op_family", ""),
+                "role":         op.get("role", ""),
+                "input_shape":  input_shape,
+                "output_shape": output_shape,
+                "flops":        int(math_info.get("flops_estimate", 0)),
+                "input_numels":  input_numels,
+                "weight_numels": weight_numels,
+                "output_numels": output_numels,
+            })
+    return ops
 
 
-def build_trace_summary(
-    parameters: dict[str, dict[str, Any]],
-    static_matrices: list[dict[str, Any]],
-    inferences: list[dict[str, Any]],
-    tiling_metrics: dict[str, Any],
-) -> dict[str, Any]:
-    operator_breakdown: dict[str, int] = {}
-    total_runtime_ops = 0
-    total_static_weight_macs = 0
-    total_dynamic_activation_macs = 0
-    total_nonlinear_element_ops = 0
-
-    for inference in inferences:
-        summary = inference.get("summary", {})
-        total_runtime_ops += int(summary.get("total_ops", 0))
-        total_static_weight_macs += int(summary.get("static_weight_macs", 0))
-        total_dynamic_activation_macs += int(summary.get("dynamic_activation_macs", 0))
-        total_nonlinear_element_ops += int(summary.get("nonlinear_element_ops", 0))
-        for op_name, count in summary.get("operation_counts", {}).items():
-            operator_breakdown[op_name] = operator_breakdown.get(op_name, 0) + int(count)
-
-    return {
-        "num_inferences": len(inferences),
-        "total_parameters": len(parameters),
-        "total_parameter_bytes": sum(item["bytes"] for item in parameters.values()),
-        "total_static_matrices": len(static_matrices),
-        "total_runtime_ops": total_runtime_ops,
-        "total_static_weight_macs": total_static_weight_macs,
-        "total_dynamic_activation_macs": total_dynamic_activation_macs,
-        "total_nonlinear_element_ops": total_nonlinear_element_ops,
-        "operator_breakdown": operator_breakdown,
-        "crossbar": {
-            "tile_shape": tiling_metrics["crossbar_size"],
-            "total_tiles": tiling_metrics["total_tiles"],
-            "used_cells": tiling_metrics["used_cells"],
-            "provisioned_cells": tiling_metrics["provisioned_cells"],
-            "wasted_cells": tiling_metrics["wasted_cells"],
-            "tiling_efficiency": tiling_metrics["tiling_efficiency"],
-        },
-    }
-
+# ─── Export ──────────────────────────────────────────────────────────────────
 
 def export_workload_trace(
     *,
@@ -211,52 +174,33 @@ def export_workload_trace(
     total_input_tokens: int,
     total_output_tokens: int,
 ) -> Path:
-    metrics_cfg = config_dict.get("metrics", {})
+    metrics_cfg   = config_dict.get("metrics", {})
     crossbar_size = tuple(metrics_cfg.get("crossbar_dimensions", (128, 128)))
-    parameters = collect_parameter_inventory(model)
-    buffers = collect_buffer_inventory(model)
-    static_matrices, tiling_metrics = build_static_matrix_inventory(model, crossbar_size)
-    routing_trace = serialize_routing_trace(expert_routing_tracker)
+
     inferences = (
         list(runtime_aimc_tracker.inference_traces)
         if runtime_aimc_tracker is not None
         else []
     )
-    enriched_inferences = attach_routing_to_inferences(inferences, routing_trace)
 
     payload = {
         "schema_version": TRACE_SCHEMA_VERSION,
         "metadata": {
-            "model_id": model_info["model_id"],
-            "model_class": model.__class__.__name__,
+            "model_id":      model_info["model_id"],
+            "model_class":   model.__class__.__name__,
             "torch_version": torch.__version__,
             "transformers_version": transformers.__version__,
-            "device": model_info.get("execution_device", "unknown"),
-            "requested_precision": config_dict.get("model", {}).get("precision"),
-            "eval_mode": not model.training,
-            "use_cache": bool(getattr(getattr(model, "config", None), "use_cache", False)),
-            "configured_top_k": model_info.get("configured_top_k"),
-            "original_top_k": model_info.get("original_top_k"),
-            "routed_experts": model_info.get("routed_experts"),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "prompts_processed": len(config_dict.get("dataset", [])),
-            "input_token_count": total_input_tokens,
-            "output_token_count": total_output_tokens,
+            "device":        model_info.get("execution_device", "unknown"),
+            "precision":     config_dict.get("model", {}).get("precision"),
+            "created_at":    datetime.now(timezone.utc).isoformat(),
+            "n_sequences":   len(config_dict.get("dataset", [])),
+            "input_tokens":  total_input_tokens,
+            "output_tokens": total_output_tokens,
+            "top_k":         model_info.get("configured_top_k"),
+            "n_experts":     model_info.get("routed_experts"),
         },
-        "model": {
-            "parameters": parameters,
-            "buffers": buffers,
-            "modules": module_class_inventory(model),
-            "static_matrix_inventory": static_matrices,
-        },
-        "inferences": enriched_inferences,
-        "routing_trace": routing_trace,
-        "summary": build_trace_summary(
-            parameters,
-            static_matrices,
-            enriched_inferences,
-            tiling_metrics,
-        ),
+        "weights": build_weights_inventory(model, crossbar_size),
+        "ops":     flatten_ops(inferences),
     }
 
     with output_path.open("wb") as handle:

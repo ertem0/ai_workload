@@ -1,11 +1,11 @@
-experiment_name: "minicpm_profile_single"
+experiment_name: "OLMoE_profile_uncapped"
 model:
-  id: "openbmb/MiniCPM-MoE-8x2B"
-  top_k: 2 # The default. You can sweep 1, 2, 4, 8.
+  id: "allenai/OLMoE-1B-7B-0924-Instruct"
   precision: "fp16"
   prefer_safetensors: true # Fail fast on repos that only publish legacy .bin weights.
+  device: "cuda"
 
-dataset:
+dataset: 
   - "Write a Python function to remove duplicate values from a list while preserving the original order. Include type hints."
   - "Explain how a hash table works, then provide a short Python example that uses a dictionary to count word frequencies."
   - "Write a Python function that checks whether a string is a palindrome, ignoring spaces and capitalization, and explain the time complexity."
@@ -25,3 +25,9 @@ dataset:
 metrics:
   calculate_expert_routing: true
 
+inference:
+  use_chat_template: true
+
+inference:
+  max_input_tokens: null   # null = no truncation
+  max_new_tokens: 1028
