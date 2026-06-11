@@ -35,12 +35,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "peak_compute_tops": 1.3,
     "peak_bandwidth_tbs": 0.0597,
     "precisions_to_test": ["fp16", "int8", "int4"],
+    "max_operation_gantt_ops": 400,
+    "max_profiler_gantt_events": 1200,
 }
 
 # ─── Parsing helpers ─────────────────────────────────────────────────────────
 
 _LAYER_RE = re.compile(r"(?:^|\.)layers\.(\d+)(?:\.|$)")
 _EXPERT_RE = re.compile(r"(?:^|\.)experts\.(\d+)(?:\.|$)")
+_PROFILER_LAYER_RE = re.compile(r"(?:^|[ .])layer\s*(\d+)(?:[ .()]|$)")
 
 
 def parse_layer_id(module_name: str) -> int | None:
@@ -66,6 +69,32 @@ def parse_op_role(module_name: str) -> str:
         return "gate"
     if "lm_head" in lower:
         return "lm_head"
+    return "other"
+
+
+def parse_profiler_layer_id(event_name: str) -> int | None:
+    match = _PROFILER_LAYER_RE.search(event_name.lower())
+    return int(match.group(1)) if match else None
+
+
+def parse_profiler_role(event_name: str) -> str:
+    lower = event_name.lower()
+    if "attention" in lower or "self_attn" in lower or any(
+        suffix in lower for suffix in (".q_proj", ".k_proj", ".v_proj", ".o_proj")
+    ):
+        return "attention"
+    if "router" in lower or ".gate" in lower or " gate " in lower:
+        return "gate"
+    if "expert" in lower or ".mlp" in lower or "sparsemoe" in lower:
+        return "expert_ffn"
+    if "norm" in lower:
+        return "norm"
+    if "embedding" in lower or "embed_tokens" in lower:
+        return "embedding"
+    if "lm_head" in lower:
+        return "lm_head"
+    if lower in {"forward_pass", "generation", "tokenize_prompt"}:
+        return lower
     return "other"
 
 
@@ -790,6 +819,199 @@ def compute_tile_timeline(
     return {"per_layer": per_layer}
 
 
+def compute_operation_gantt(
+    ops: list[dict[str, Any]],
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Build a Gantt-style operation schedule from the workload trace.
+
+    Workload traces are structural, not wall-clock profiler traces. If an op
+    carries `duration_ms`, that value is used. Otherwise duration is an
+    estimated relative unit proportional to FLOPs, with a small floor so
+    routing and other low-FLOP operations remain visible.
+    """
+
+    max_ops = int(config.get("max_operation_gantt_ops", 400))
+    use_flops = not any(op.get("duration_ms") is not None for op in ops)
+
+    lanes: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    phase_totals: dict[str, float] = defaultdict(float)
+    role_totals: dict[str, float] = defaultdict(float)
+    operation_count = 0
+
+    for op_index, op in enumerate(ops):
+        module = op.get("module") or ""
+        phase = str(op.get("phase", op.get("_phase", "unknown")))
+        layer_id = parse_layer_id(module)
+        role = parse_op_role(module)
+        op_type = str(op.get("op_type", "unknown"))
+        op_family = str(op.get("op_family", ""))
+
+        duration_raw = op.get("duration_ms")
+        if duration_raw is not None:
+            duration = max(float(duration_raw), 1e-9)
+        else:
+            duration = max(float(_op_flops(op)), 1.0)
+
+        lane = f"{phase}: layer {layer_id}" if layer_id is not None else f"{phase}: other"
+        start = phase_totals[phase]
+        end = start + duration
+        phase_totals[phase] = end
+        role_totals[role] += duration
+
+        if operation_count < max_ops:
+            lanes[lane].append(
+                {
+                    "index": op_index,
+                    "module": module,
+                    "label": module or op_type,
+                    "phase": phase,
+                    "layer_id": layer_id,
+                    "role": role,
+                    "op_type": op_type,
+                    "op_family": op_family,
+                    "start": start,
+                    "end": end,
+                    "duration": duration,
+                    "flops": _op_flops(op),
+                    "input_shape": op.get("input_shape"),
+                    "output_shape": op.get("output_shape"),
+                }
+            )
+        operation_count += 1
+
+    total_duration = sum(role_totals.values())
+    role_fractions = {
+        role: {
+            "duration": duration,
+            "fraction": duration / total_duration if total_duration > 0 else 0.0,
+        }
+        for role, duration in sorted(role_totals.items())
+    }
+
+    return {
+        "time_unit": "relative_flop_units" if use_flops else "milliseconds",
+        "duration_source": "flops_estimate" if use_flops else "duration_ms",
+        "max_ops": max_ops,
+        "total_ops": len(ops),
+        "plotted_ops": sum(len(entries) for entries in lanes.values()),
+        "lanes": dict(sorted(lanes.items())),
+        "phase_totals": dict(sorted(phase_totals.items())),
+        "role_totals": role_fractions,
+    }
+
+
+def compute_profiler_gantt(
+    profiler_trace_path: Path,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Build a real-time Gantt dataset from a PyTorch Chrome profiler trace.
+
+    The runner labels module forwards with `torch.profiler.record_function`,
+    which appears in Chrome traces as `cat=user_annotation`, `ph=X` events.
+    Their timestamps and durations are in microseconds, so this converts them
+    to milliseconds relative to the first selected event.
+    """
+
+    payload = json.loads(profiler_trace_path.read_text(encoding="utf-8"))
+    events = payload.get("traceEvents", payload if isinstance(payload, list) else [])
+    max_events = int(config.get("max_profiler_gantt_events", 1200))
+
+    thread_names: dict[tuple[Any, Any], str] = {}
+    selected: list[dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("ph") == "M" and event.get("name") == "thread_name":
+            args = event.get("args", {})
+            if isinstance(args, dict) and args.get("name"):
+                thread_names[(event.get("pid"), event.get("tid"))] = str(args["name"])
+            continue
+        if event.get("ph") != "X" or event.get("dur") is None or event.get("ts") is None:
+            continue
+        if event.get("cat") != "user_annotation":
+            continue
+        name = str(event.get("name", ""))
+        if not name or name.startswith("ProfilerStep"):
+            continue
+        selected.append(event)
+
+    selected.sort(key=lambda event: (float(event["ts"]), -float(event.get("dur", 0.0))))
+    total_events = len(selected)
+    plotted_events = selected[:max_events]
+    if not plotted_events:
+        return {
+            "source": str(profiler_trace_path),
+            "time_unit": "milliseconds",
+            "total_events": total_events,
+            "plotted_events": 0,
+            "lanes": {},
+            "role_totals": {},
+        }
+
+    base_ts = min(float(event["ts"]) for event in plotted_events)
+    lanes: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    role_totals: dict[str, float] = defaultdict(float)
+    max_end = 0.0
+
+    for event_index, event in enumerate(plotted_events):
+        name = str(event.get("name", ""))
+        start_ms = (float(event["ts"]) - base_ts) / 1000.0
+        duration_ms = max(float(event.get("dur", 0.0)) / 1000.0, 1e-9)
+        end_ms = start_ms + duration_ms
+        layer_id = parse_profiler_layer_id(name)
+        role = parse_profiler_role(name)
+        pid = event.get("pid")
+        tid = event.get("tid")
+        thread_name = thread_names.get((pid, tid))
+        if thread_name:
+            lane = f"{thread_name} (pid {pid}, tid {tid})"
+        else:
+            lane = f"pid {pid}, tid {tid}"
+
+        role_totals[role] += duration_ms
+        max_end = max(max_end, end_ms)
+        lanes[lane].append(
+            {
+                "index": event_index,
+                "name": name,
+                "role": role,
+                "layer_id": layer_id,
+                "start": start_ms,
+                "end": end_ms,
+                "duration": duration_ms,
+                "pid": pid,
+                "tid": tid,
+                "thread_name": thread_name,
+                "category": event.get("cat"),
+            }
+        )
+
+    total_duration = sum(role_totals.values())
+    role_fractions = {
+        role: {
+            "duration_ms": duration,
+            "fraction": duration / total_duration if total_duration > 0 else 0.0,
+        }
+        for role, duration in sorted(role_totals.items())
+    }
+
+    return {
+        "source": str(profiler_trace_path),
+        "time_unit": "milliseconds",
+        "duration_source": "torch_profiler_chrome_trace",
+        "lane_mode": "thread",
+        "total_events": total_events,
+        "plotted_events": len(plotted_events),
+        "max_events": max_events,
+        "max_end_ms": max_end,
+        "lanes": dict(sorted(lanes.items())),
+        "role_totals": role_fractions,
+    }
+
+
 # ─── Metric 9: Precision Sensitivity (separate experiment runner) ─────────────
 
 def run_precision_sensitivity(
@@ -1079,6 +1301,54 @@ def generate_report(all_results: dict[str, Any]) -> str:
             )
         lines.append("")
 
+    # Operation Gantt
+    og = all_results.get("operation_gantt")
+    if og:
+        lines += ["## Operation Gantt", ""]
+        lines.append(
+            f"Plotted **{og.get('plotted_ops', 0)}** of "
+            f"**{og.get('total_ops', 0)}** operations using "
+            f"`{og.get('duration_source', 'trace')}` durations. "
+            "See `raw/operation_gantt.json` and `plots/operation_gantt.png`."
+        )
+        role_totals = og.get("role_totals", {})
+        if role_totals:
+            lines.append("")
+            lines.append("| Role | Fraction |")
+            lines.append("|:-----|---------:|")
+            for role, stats in sorted(
+                role_totals.items(),
+                key=lambda item: item[1].get("fraction", 0.0),
+                reverse=True,
+            ):
+                lines.append(f"| {role} | {stats.get('fraction', 0.0) * 100:.2f}% |")
+        lines.append("")
+
+    pg = all_results.get("profiler_gantt")
+    if pg:
+        lines += ["## Profiler Gantt", ""]
+        lines.append(
+            f"Parsed **{pg.get('plotted_events', 0)}** of "
+            f"**{pg.get('total_events', 0)}** profiler events from "
+            f"`{pg.get('source', '')}`. "
+            "See `raw/profiler_gantt.json` and `plots/profiler_gantt.png`."
+        )
+        role_totals = pg.get("role_totals", {})
+        if role_totals:
+            lines.append("")
+            lines.append("| Role | Time | Fraction |")
+            lines.append("|:-----|-----:|---------:|")
+            for role, stats in sorted(
+                role_totals.items(),
+                key=lambda item: item[1].get("duration_ms", 0.0),
+                reverse=True,
+            ):
+                lines.append(
+                    f"| {role} | {_fmt(stats.get('duration_ms'), 3)} ms | "
+                    f"{stats.get('fraction', 0.0) * 100:.2f}% |"
+                )
+        lines.append("")
+
     # 8. Tile Timeline
     tt = all_results.get("tile_timeline")
     if tt:
@@ -1155,6 +1425,7 @@ def run_all_metrics(
     output_dir: Path,
     config: dict[str, Any] | None = None,
     precision_sensitivity_results: dict[str, Any] | None = None,
+    profiler_trace_path: Path | None = None,
 ) -> dict[str, Any]:
     """
     Run metrics 1–8 from trace file(s) and write all outputs under output_dir.
@@ -1170,6 +1441,8 @@ def run_all_metrics(
         output_dir:                    Root for metrics/ output tree.
         config:                        Override any DEFAULT_CONFIG keys.
         precision_sensitivity_results: Optional pre-computed Metric 9 output.
+        profiler_trace_path:           Optional PyTorch Chrome trace JSON for
+                                       real-time profiler Gantt plotting.
 
     Returns:
         Dict mapping metric name → raw result dict.
@@ -1236,12 +1509,19 @@ def run_all_metrics(
 
     _METRICS = [
         ("roofline",                  lambda: compute_roofline(ops, cfg, metadata)),
+        ("operation_gantt",           lambda: compute_operation_gantt(ops, cfg)),
+        ("tile_timeline",             lambda: compute_tile_timeline(ops, cfg)),
     ]
 
     for i, (name, fn) in enumerate(_METRICS, 1):
         print(f"[metrics] {i}/{len(_METRICS)} {name}...")
         all_results[name] = fn()
         _write_json(all_results[name], raw_dir / f"{name}.json")
+
+    if profiler_trace_path is not None:
+        print(f"[metrics] profiler_gantt from {profiler_trace_path}...")
+        all_results["profiler_gantt"] = compute_profiler_gantt(profiler_trace_path, cfg)
+        _write_json(all_results["profiler_gantt"], raw_dir / "profiler_gantt.json")
 
     if precision_sensitivity_results is not None:
         all_results["precision_sensitivity"] = precision_sensitivity_results
@@ -1254,6 +1534,15 @@ def run_all_metrics(
     report_path = output_dir / "report.md"
     report_path.write_text(report, encoding="utf-8")
     print(f"[metrics] Done. Report: {report_path}")
+
+    try:
+        from src.metrics.plots import plot_all
+
+        plots_dir = output_dir / "plots"
+        print(f"[metrics] Generating plots in {plots_dir}...")
+        plot_all(raw_dir, plots_dir)
+    except Exception as exc:
+        print(f"[metrics] Plot generation skipped: {exc}")
 
     return all_results
 
@@ -1282,6 +1571,16 @@ def _build_cli() -> "argparse.ArgumentParser":
     p.add_argument("--peak-bandwidth", type=float,
                    default=DEFAULT_CONFIG["peak_bandwidth_tbs"],
                    metavar="TB/s")
+    p.add_argument("--max-operation-gantt-ops", type=int,
+                   default=DEFAULT_CONFIG["max_operation_gantt_ops"],
+                   metavar="N",
+                   help="Maximum operations included in raw/operation_gantt.json.")
+    p.add_argument("--profiler-trace",
+                   help="Optional PyTorch Chrome trace JSON for real-time profiler Gantt.")
+    p.add_argument("--max-profiler-gantt-events", type=int,
+                   default=DEFAULT_CONFIG["max_profiler_gantt_events"],
+                   metavar="N",
+                   help="Maximum user-annotation events included in raw/profiler_gantt.json.")
     return p
 
 
@@ -1297,5 +1596,8 @@ if __name__ == "__main__":
             "aimc_roofline_threshold": args.aimc_threshold,
             "peak_compute_tops": args.peak_compute,
             "peak_bandwidth_tbs": args.peak_bandwidth,
+            "max_operation_gantt_ops": args.max_operation_gantt_ops,
+            "max_profiler_gantt_events": args.max_profiler_gantt_events,
         },
+        profiler_trace_path=Path(args.profiler_trace).resolve() if args.profiler_trace else None,
     )

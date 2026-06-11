@@ -25,6 +25,20 @@ except ImportError as exc:  # pragma: no cover - runtime dependency guard
 DYNAMIC_MATMUL_OPS = {"matmul", "bmm", "baddbmm", "einsum"}
 
 
+class PhaseAwareOperationList(list[dict[str, Any]]):
+    def __init__(self, tracker: Any) -> None:
+        super().__init__()
+        self.tracker = tracker
+
+    def append(self, operation: dict[str, Any]) -> None:
+        operation.setdefault("phase", self.tracker.current_pass_phase)
+        super().append(operation)
+
+    def extend(self, operations: Sequence[dict[str, Any]]) -> None:
+        for operation in operations:
+            self.append(operation)
+
+
 class HookableActivation(nn.Module):
     """Wrap callable activation functions so forward hooks can inspect outputs."""
 
@@ -223,18 +237,20 @@ class RuntimeAIMCTracker:
         self.prompt_active = False
         self.prompt_count = 0
         self.current_phase = "prefill"
-        self._decode_pass_count = 0
+        self.current_pass_phase = "prefill"
+        self._generation_forward_count = 0
         self._suppress_current_pass = False
 
         self.param_numels = sum(p.numel() for p in model.parameters())
         self.wrapped_activations = self._wrap_functional_activations()
 
         self.current_activation_numels = 0
+        self.current_activation_numels_by_phase: Counter[str] = Counter()
         self.current_seen_storages: set[tuple[int, int, int]] = set()
         self.current_prompt_index: int | None = None
         self.current_input_shapes: dict[str, tuple[int, ...]] = {}
         self.current_input_dtypes: dict[str, str] = {}
-        self.current_operations: list[dict[str, Any]] = []
+        self.current_operations: PhaseAwareOperationList = PhaseAwareOperationList(self)
         self.inference_traces: list[dict[str, Any]] = []
 
         self.total_activation_numels = 0
@@ -277,6 +293,7 @@ class RuntimeAIMCTracker:
                     continue
                 self.current_seen_storages.add(key)
                 self.current_activation_numels += tensor.numel()
+                self.current_activation_numels_by_phase[self.current_pass_phase] += tensor.numel()
 
         def linear_hook(module_name: str, module: nn.Linear):
             def hook(_: nn.Module, inputs: tuple[Any, ...], output: Any) -> None:
@@ -818,13 +835,20 @@ class RuntimeAIMCTracker:
                 ])
             return hook
 
-        def decode_pass_pre_hook(_module: nn.Module, _args: tuple) -> None:
-            if not self.enabled or not self.prompt_active or self.current_phase != "decode":
+        def generation_pass_pre_hook(_module: nn.Module, _args: tuple[Any, ...]) -> None:
+            if not self.enabled or not self.prompt_active:
                 return
-            self._decode_pass_count += 1
-            self._suppress_current_pass = self._decode_pass_count == 1
+            if self.current_phase != "generate":
+                self.current_pass_phase = self.current_phase
+                self._suppress_current_pass = False
+                return
+            self._generation_forward_count += 1
+            self.current_pass_phase = (
+                "prefill" if self._generation_forward_count == 1 else "decode"
+            )
+            self._suppress_current_pass = False
 
-        self.handles.append(self.model.register_forward_pre_hook(decode_pass_pre_hook))
+        self.handles.append(self.model.register_forward_pre_hook(generation_pass_pre_hook))
 
         for module_name, module in self.model.named_modules():
             if module_name and len(list(module.children())) == 0:
@@ -865,12 +889,14 @@ class RuntimeAIMCTracker:
     ) -> None:
         self.prompt_active = True
         self.current_phase = phase
+        self.current_pass_phase = phase
         self.current_prompt_index = prompt_index
-        self._decode_pass_count = 0
+        self._generation_forward_count = 0
         self._suppress_current_pass = False
         self.current_activation_numels = 0
+        self.current_activation_numels_by_phase.clear()
         self.current_seen_storages.clear()
-        self.current_operations = []
+        self.current_operations = PhaseAwareOperationList(self)
         self.current_input_shapes = {}
         self.current_input_dtypes = {}
         if batch is not None:
@@ -887,68 +913,113 @@ class RuntimeAIMCTracker:
 
     def finish_prompt(self) -> None:
         if self.prompt_active:
-            self.total_activation_numels += self.current_activation_numels
-            self.prompt_count += 1
-            operation_counts = Counter(
-                str(operation.get("op_type", "unknown"))
-                for operation in self.current_operations
-            )
-            static_weight_macs = sum(
-                int(operation.get("math", {}).get("macs", 0))
-                for operation in self.current_operations
-                if operation.get("op_family") == "static_weight_matmul"
-            )
-            dynamic_activation_macs = sum(
-                int(operation.get("math", {}).get("macs", 0))
-                for operation in self.current_operations
-                if operation.get("op_family") == "dynamic_activation_matmul"
-            )
-            nonlinear_element_ops = sum(
-                int(operation.get("element_count", 0))
-                for operation in self.current_operations
-                if operation.get("op_family") == "elementwise"
-            )
-            reduction_ops = sum(
-                1 for operation in self.current_operations
-                if operation.get("op_family") == "reduction"
-            )
-            moe_routing_ops = sum(
-                1 for operation in self.current_operations
-                if operation.get("op_family") == "moe_routing"
-            )
-            rope_ops = sum(
-                1 for operation in self.current_operations
-                if operation.get("op_family") == "rope"
-            )
-            operations = [
-                {"event_id": event_id, **operation}
-                for event_id, operation in enumerate(self.current_operations)
+            phase_order = ["prefill", "decode"]
+            if self.current_phase != "generate":
+                phase_order = [self.current_phase]
+            extra_phases = [
+                phase
+                for phase in dict.fromkeys(
+                    str(operation.get("phase", self.current_phase))
+                    for operation in self.current_operations
+                )
+                if phase not in phase_order
             ]
-            self.inference_traces.append(
-                {
-                    "inference_id": len(self.inference_traces),
-                    "prompt_index": self.current_prompt_index,
-                    "phase": self.current_phase,
-                    "input_shape": self.current_input_shapes,
-                    "input_dtypes": self.current_input_dtypes,
-                    "operations": operations,
-                    "summary": {
-                        "total_ops": len(operations),
-                        "operation_counts": dict(operation_counts),
-                        "linear_ops": operation_counts.get("linear", 0),
-                        "dynamic_matmul_ops": operation_counts.get("matmul", 0),
-                        "activation_ops": operation_counts.get("activation", 0),
-                        "static_weight_macs": static_weight_macs,
-                        "dynamic_activation_macs": dynamic_activation_macs,
-                        "nonlinear_element_ops": nonlinear_element_ops,
-                        "reduction_ops": reduction_ops,
-                        "moe_routing_ops": moe_routing_ops,
-                        "rope_ops": rope_ops,
-                        "activation_numels": self.current_activation_numels,
-                    },
-                }
-            )
+            trace_phases = phase_order + extra_phases
+
+            def operations_for_phase(phase: str) -> list[dict[str, Any]]:
+                if self.current_phase == "generate":
+                    return [
+                        operation
+                        for operation in self.current_operations
+                        if operation.get("phase") == phase
+                    ]
+                return list(self.current_operations)
+
+            for trace_phase in trace_phases:
+                operations_for_trace = operations_for_phase(trace_phase)
+                activation_numels = (
+                    self.current_activation_numels_by_phase.get(trace_phase, 0)
+                    if self.current_phase == "generate"
+                    else self.current_activation_numels
+                )
+                if not operations_for_trace and not activation_numels:
+                    continue
+
+                self.total_activation_numels += activation_numels
+                self.prompt_count += 1
+                self._append_inference_trace(
+                    phase=trace_phase,
+                    operations=operations_for_trace,
+                    activation_numels=activation_numels,
+                )
         self.prompt_active = False
+
+    def _append_inference_trace(
+        self,
+        *,
+        phase: str,
+        operations: list[dict[str, Any]],
+        activation_numels: int,
+    ) -> None:
+        operation_counts = Counter(
+            str(operation.get("op_type", "unknown"))
+            for operation in operations
+        )
+        static_weight_macs = sum(
+            int(operation.get("math", {}).get("macs", 0))
+            for operation in operations
+            if operation.get("op_family") == "static_weight_matmul"
+        )
+        dynamic_activation_macs = sum(
+            int(operation.get("math", {}).get("macs", 0))
+            for operation in operations
+            if operation.get("op_family") == "dynamic_activation_matmul"
+        )
+        nonlinear_element_ops = sum(
+            int(operation.get("element_count", 0))
+            for operation in operations
+            if operation.get("op_family") == "elementwise"
+        )
+        reduction_ops = sum(
+            1 for operation in operations
+            if operation.get("op_family") == "reduction"
+        )
+        moe_routing_ops = sum(
+            1 for operation in operations
+            if operation.get("op_family") == "moe_routing"
+        )
+        rope_ops = sum(
+            1 for operation in operations
+            if operation.get("op_family") == "rope"
+        )
+        trace_operations = [
+            {"event_id": event_id, **operation}
+            for event_id, operation in enumerate(operations)
+        ]
+        self.inference_traces.append(
+            {
+                "inference_id": len(self.inference_traces),
+                "prompt_index": self.current_prompt_index,
+                "phase": phase,
+                "input_shape": self.current_input_shapes,
+                "input_dtypes": self.current_input_dtypes,
+                "operations": trace_operations,
+                "summary": {
+                    "total_ops": len(trace_operations),
+                    "operation_counts": dict(operation_counts),
+                    "linear_ops": operation_counts.get("linear", 0),
+                    "dynamic_matmul_ops": operation_counts.get("matmul", 0),
+                    "activation_ops": operation_counts.get("activation", 0),
+                    "static_weight_macs": static_weight_macs,
+                    "dynamic_activation_macs": dynamic_activation_macs,
+                    "nonlinear_element_ops": nonlinear_element_ops,
+                    "reduction_ops": reduction_ops,
+                    "moe_routing_ops": moe_routing_ops,
+                    "rope_ops": rope_ops,
+                    "activation_numels": activation_numels,
+                },
+            }
+        )
 
     def analyze_flops_for_prompt(self, batch: Mapping[str, torch.Tensor]) -> None:
         configure_fvcore_logging()

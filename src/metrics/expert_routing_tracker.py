@@ -30,6 +30,7 @@ class ExpertRoutingTracker:
         self.top_k = top_k
         self.handles: list[Any] = []
         self.enabled = True
+        self.router_hook_count = 0
         self.num_routed_experts = self._infer_num_routed_experts()
         self.layer_order: list[str] = []
         self.layer_name_to_id: dict[str, int] = {}
@@ -49,6 +50,7 @@ class ExpertRoutingTracker:
         self.current_phase = "idle"
         self.generate_prompt_length = 0
         self.current_decode_step = -1
+        self.current_generation_forward_index = -1
 
     @staticmethod
     def _normalize_token_ids(token_ids: torch.Tensor | list[int]) -> list[int]:
@@ -73,6 +75,7 @@ class ExpertRoutingTracker:
         self.current_phase = "prefill"
         self.generate_prompt_length = len(self.current_prompt_token_ids)
         self.current_decode_step = -1
+        self.current_generation_forward_index = -1
         self.routing_trace.setdefault(prompt_index, [])
 
     def start_generation_trace(
@@ -86,6 +89,7 @@ class ExpertRoutingTracker:
         self.current_phase = "generate"
         self.generate_prompt_length = len(self.current_prompt_token_ids)
         self.current_decode_step = -1
+        self.current_generation_forward_index = -1
         self.routing_trace.setdefault(prompt_index, [])
 
     def finalize_generation_trace(
@@ -229,17 +233,34 @@ class ExpertRoutingTracker:
 
     def _infer_num_routed_experts(self) -> int:
         config = getattr(self.model, "config", None)
-        for attr in ("num_experts", "num_local_experts", "n_routed_experts", "num_routed_experts"):
+        for attr in (
+            "num_experts",
+            "num_local_experts",
+            "n_routed_experts",
+            "num_routed_experts",
+            "moe_num_experts",
+        ):
             val = int(getattr(config, attr, 0))
             if val > 0:
                 return val
         raise ValueError(
             "Unable to determine the number of routed experts from model.config. "
-            "Tried: num_experts, num_local_experts, n_routed_experts, num_routed_experts."
+            "Tried: num_experts, num_local_experts, n_routed_experts, "
+            "num_routed_experts, moe_num_experts."
         )
 
     def _is_router_gate(self, module_name: str, module: nn.Module) -> bool:
         leaf_name = module_name.rsplit(".", maxsplit=1)[-1]
+        if leaf_name == "router":
+            router_layer = getattr(module, "layer", None)
+            if (
+                hasattr(module, "top_k")
+                and int(getattr(module, "num_experts", 0)) == self.num_routed_experts
+                and isinstance(router_layer, nn.Linear)
+                and router_layer.out_features == self.num_routed_experts
+            ):
+                return True
+
         if leaf_name not in ("gate", "router", "gate_proj") or "experts" in module_name:
             return False
 
@@ -249,8 +270,19 @@ class ExpertRoutingTracker:
         ):
             return True
 
-        required_attrs = ("top_k", "num_experts", "weight")
-        return all(hasattr(module, attr) for attr in required_attrs)
+        if not (hasattr(module, "top_k") and hasattr(module, "weight")):
+            return False
+
+        for expert_count_attr in (
+            "num_experts",
+            "num_routed_experts",
+            "n_routed_experts",
+            "num_local_experts",
+        ):
+            if int(getattr(module, expert_count_attr, 0)) == self.num_routed_experts:
+                return True
+
+        return False
 
     def _extract_layer_name(self, module_name: str) -> str:
         """
@@ -313,6 +345,14 @@ class ExpertRoutingTracker:
         Attach forward hooks to every discovered router `gate` module.
         """
 
+        def generation_forward_pre_hook(_module: nn.Module, _args: tuple[Any, ...]) -> None:
+            if not self.enabled or self.current_phase != "generate":
+                return
+            self.current_generation_forward_index += 1
+
+        self.handles.append(self.model.register_forward_pre_hook(generation_forward_pre_hook))
+        self.router_hook_count = 0
+
         for module_name, module in self.model.named_modules():
             if not self._is_router_gate(module_name, module):
                 continue
@@ -339,10 +379,16 @@ class ExpertRoutingTracker:
 
                     event_indices = selected_experts.reshape(-1, router_top_k).cpu()
                     if self.current_phase == "generate":
-                        self._capture_decode_trace(
-                            current_layer_name=current_layer_name,
-                            event_indices=event_indices,
-                        )
+                        if self.current_generation_forward_index <= 0:
+                            self._capture_prefill_trace(
+                                current_layer_name=current_layer_name,
+                                event_indices=event_indices,
+                            )
+                        else:
+                            self._capture_decode_trace(
+                                current_layer_name=current_layer_name,
+                                event_indices=event_indices,
+                            )
                         return
 
                     self._capture_prefill_trace(
@@ -355,11 +401,14 @@ class ExpertRoutingTracker:
             self.handles.append(
                 module.register_forward_hook(make_hook(layer_name, module))
             )
+            self.router_hook_count += 1
 
-        if not self.handles:
+        if self.router_hook_count == 0:
+            self.remove_hooks()
             raise RuntimeError(
                 "No MoE router gate layers were found. "
-                "Expected Linear modules named 'gate' or 'router' with "
+                "Expected Linear modules named 'gate' or 'router', or "
+                "JetMoE-style 'router.layer' modules, with "
                 f"out_features={self.num_routed_experts}."
             )
 

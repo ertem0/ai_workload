@@ -1,0 +1,158 @@
+
+Loading results/olmoe_profile_2/inference_trace.json...
+
+==========================================================================================
+  Block:  layer2.experts (OlmoeExperts)
+  Match:  #2 of 4 matching 'layer2.experts' annotations
+  Ext id: 51689
+==========================================================================================
+
+SUMMARY───────────────────────────────────────────────────────────────────────────────────
+  Metric                                            CPU           GPU
+  ──────────────────────────────────────── ────────────  ────────────
+  Window duration                              1161.6μs       890.9μs
+  Active op time                               2101.4μs       379.5μs
+  Idle/gap time                                -939.7μs       511.4μs
+  Active ratio                                 180.9%       42.6%
+  Num operations                                     82            15
+
+GPU BREAKDOWN─────────────────────────────────────────────────────────────────────────────
+  AIMC analog (gemm/cutlass/gemv)                       125.1μs   14.0%
+  Digital dispatch (gather/scatter/fill/scan)           227.6μs   25.5%
+  Other kernels (elementwise/reduce/etc)                 26.8μs    3.0%
+  GPU idle gaps                                         511.4μs   57.4%
+
+CPU BREAKDOWN─────────────────────────────────────────────────────────────────────────────
+  Dispatch/index ops                                    129.7μs   11.2%
+  Sync/copy ops                                         247.9μs   21.3%
+  Other cpu ops                                        1723.7μs  148.4%
+  CPU idle/python overhead                             -939.7μs  -80.9%
+
+GPU IDLE GAP ANALYSIS─────────────────────────────────────────────────────────────────────
+  Total gap time:       504.6μs
+  Sync barriers:          0.0μs  (0.0% of gaps)  ← CPU-GPU sync points
+  Launch latency:         0.0μs  (0.0% of gaps)  ← CUDA kernel launch overhead
+  CPU overhead:         504.6μs  (100.0% of gaps)  ← Python/dispatch logic
+  Unattributed:           0.0μs  (0.0% of gaps)
+
+  Top 5 largest gaps:
+     rel_start         dur  cause             cpu ops during gap
+  ────────────  ──────────  ────────────────  ──────────────────────────────
+         154.9       265.3  cpu_overhead      model.layers.2.mlp.experts.act_fn (SiLUA
+         526.1       226.8  cpu_overhead      model.layers.2.mlp.experts.act_fn (SiLUA
+         518.4         6.7  cpu_overhead      model.layers.2.mlp.experts.act_fn (SiLUA
+         884.1         5.8  cpu_overhead      aten::to, aten::_to_copy, aten::copy_
+
+GPU KERNELS───────────────────────────────────────────────────────────────────────────────
+    rel_ts(μs)     dur(μs)  type          kernel
+  ────────────  ──────────  ────────────  ──────────────────────────────────────────────────
+           0.0       2.464  kernel        void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#10}::operator()() const::{lambda(c10::Half)#1}>(at::TensorIteratorBase&, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#10}::operator()() const::{lambda(c10::Half)#1} const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#10}::operator()() const::{lambda(c10::Half)#1}>(at::TensorIteratorBase&, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#10}::operator()() const::{lambda(c10::Half)#1} const&)::{lambda(int)#1})
+           3.1       1.760  kernel        void at::native::vectorized_elementwise_kernel<2, at::native::(anonymous namespace)::launch_clamp_scalar(at::TensorIteratorBase&, c10::Scalar, c10::Scalar, at::native::detail::ClampLimits)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long)#1}, std::array<char*, 2ul> >(int, at::native::(anonymous namespace)::launch_clamp_scalar(at::TensorIteratorBase&, c10::Scalar, c10::Scalar, at::native::detail::ClampLimits)::{lambda()#1}::operator()() const::{lambda()#4}::operator()() const::{lambda(long)#1}, std::array<char*, 2ul>)
+           5.6     149.378  kernel        void at::native::vectorized_gather_kernel<16, long>(char*, char*, long*, int, long, long, long, long, bool)
+         420.3      83.617  kernel        void cutlass::Kernel2<cutlass_80_wmma_tensorop_f16_s161616gemm_f16_32x32_128x2_tn_align8>(cutlass_80_wmma_tensorop_f16_s161616gemm_f16_32x32_128x2_tn_align8::Params)
+         504.5       3.488  kernel        void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::(anonymous namespace)::silu_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#5}::operator()() const::{lambda(c10::Half)#1}>(at::TensorIteratorBase&, at::native::(anonymous namespace)::silu_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#5}::operator()() const::{lambda(c10::Half)#1} const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::(anonymous namespace)::silu_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#5}::operator()() const::{lambda(c10::Half)#1}>(at::TensorIteratorBase&, at::native::(anonymous namespace)::silu_kernel(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#5}::operator()() const::{lambda(c10::Half)#1} const&)::{lambda(int)#1})
+         508.9       1.504  kernel        void at::native::vectorized_elementwise_kernel<4, at::native::AUnaryFunctor<c10::Half, c10::Half, bool, at::native::(anonymous namespace)::CompareEqFunctor<c10::Half> >, std::array<char*, 2ul> >(int, at::native::AUnaryFunctor<c10::Half, c10::Half, bool, at::native::(anonymous namespace)::CompareEqFunctor<c10::Half> >, std::array<char*, 2ul>)
+         511.1       2.656  kernel        void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#4}::operator()() const::{lambda(long)#1}, std::array<char*, 2ul>, 4, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1> >(int, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#4}::operator()() const::{lambda(long)#1}, std::array<char*, 2ul>, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1>)
+         514.4       3.968  kernel        void at::native::reduce_kernel<512, 1, at::native::ReduceOp<long, at::native::func_wrapper_t<long, at::native::sum_functor<long, long, long>::operator()(at::TensorIterator&)::{lambda(long, long)#1}>, unsigned int, long, 4, 4> >(at::native::ReduceOp<long, at::native::func_wrapper_t<long, at::native::sum_functor<long, long, long>::operator()(at::TensorIterator&)::{lambda(long, long)#1}>, unsigned int, long, 4, 4>)
+         525.0       1.088  gpu_memcpy    Memcpy DtoH (Device -> Pinned)
+         752.9       3.104  kernel        void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::BinaryFunctor<c10::Half, c10::Half, c10::Half, at::native::binary_internal::MulFunctor<float> > >(at::TensorIteratorBase&, at::native::BinaryFunctor<c10::Half, c10::Half, c10::Half, at::native::binary_internal::MulFunctor<float> > const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::BinaryFunctor<c10::Half, c10::Half, c10::Half, at::native::binary_internal::MulFunctor<float> > >(at::TensorIteratorBase&, at::native::BinaryFunctor<c10::Half, c10::Half, c10::Half, at::native::binary_internal::MulFunctor<float> > const&)::{lambda(int)#1})
+         756.7      76.033  kernel        void at::native::vectorized_gather_kernel<16, long>(char*, char*, long*, int, long, long, long, long, bool)
+         833.5      41.504  kernel        void cutlass::Kernel2<cutlass_80_wmma_tensorop_f16_s161616gemm_f16_16x16_128x2_tn_align8>(cutlass_80_wmma_tensorop_f16_s161616gemm_f16_16x16_128x2_tn_align8::Params)
+         875.6       3.424  kernel        void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::BinaryFunctor<c10::Half, c10::Half, c10::Half, at::native::binary_internal::MulFunctor<float> > >(at::TensorIteratorBase&, at::native::BinaryFunctor<c10::Half, c10::Half, c10::Half, at::native::binary_internal::MulFunctor<float> > const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::BinaryFunctor<c10::Half, c10::Half, c10::Half, at::native::binary_internal::MulFunctor<float> > >(at::TensorIteratorBase&, at::native::BinaryFunctor<c10::Half, c10::Half, c10::Half, at::native::binary_internal::MulFunctor<float> > const&)::{lambda(int)#1})
+         879.6       4.480  kernel        void at::native::reduce_kernel<128, 4, at::native::ReduceOp<c10::Half, at::native::func_wrapper_t<c10::Half, at::native::sum_functor<c10::Half, float, c10::Half>::operator()(at::TensorIterator&)::{lambda(float, float)#1}>, unsigned int, c10::Half, 4, 8> >(at::native::ReduceOp<c10::Half, at::native::func_wrapper_t<c10::Half, at::native::sum_functor<c10::Half, float, c10::Half>::operator()(at::TensorIterator&)::{lambda(float, float)#1}>, unsigned int, c10::Half, 4, 8>)
+         889.9       1.056  gpu_memcpy    Memcpy DtoH (Device -> Pageable)
+
+CPU OPS───────────────────────────────────────────────────────────────────────────────────
+    rel_ts(μs)     dur(μs)  type              op
+  ────────────  ──────────  ────────────────  ──────────────────────────────────────────────────
+          16.8      38.300  cpu_op            aten::repeat_interleave
+          18.0       2.570  cpu_op            aten::unsqueeze
+          19.4       0.740  cpu_op            aten::as_strided
+          21.6       1.920  cpu_op            aten::expand
+          22.8       0.460  cpu_op            aten::as_strided
+          24.4      27.130  cpu_op            aten::clone
+          25.2       8.560  cpu_op            aten::empty_like
+          26.2       7.240  cpu_op            aten::empty
+          34.7      16.420  cpu_op            aten::copy_
+          52.5       2.320  cpu_op            aten::flatten
+          53.8       0.810  cpu_op            aten::view
+          58.5       1.230  cpu_op            aten::reshape
+          59.2       0.350  cpu_op            aten::view
+          61.1       1.060  cpu_op            aten::reshape
+          61.7       0.240  cpu_op            aten::view
+          65.0      11.860  cpu_op            aten::clamp_
+          66.1       0.320  cpu_op            aten::to
+          83.5      26.119  cpu_op            aten::index
+          90.1       1.979  cpu_op            aten::as_strided
+          93.0       1.160  cpu_op            aten::reshape
+          93.5       0.510  cpu_op            aten::view
+         115.3       1.940  cpu_op            aten::unsqueeze
+         116.6       0.460  cpu_op            aten::as_strided
+         166.4      24.810  cpu_op            aten::bmm
+         195.8       2.900  cpu_op            aten::squeeze
+         197.8       0.590  cpu_op            aten::as_strided
+         201.9       9.260  cpu_op            aten::chunk
+         203.1       7.880  cpu_op            aten::split
+         204.0       4.170  cpu_op            aten::narrow
+         205.5       2.320  cpu_op            aten::slice
+         206.7       0.610  cpu_op            aten::as_strided
+         208.7       2.050  cpu_op            aten::narrow
+         209.4       1.200  cpu_op            aten::slice
+         210.1       0.270  cpu_op            aten::as_strided
+         232.1     444.879  user_annotation   model.layers.2.mlp.experts.act_fn (SiLUActivation)
+         241.7      17.270  cpu_op            aten::silu
+         279.1      14.980  cpu_op            aten::eq
+         297.1      41.820  cpu_op            aten::sum
+         298.5      40.170  cpu_op            aten::sum
+         302.3       3.440  cpu_op            aten::as_strided
+         306.7      22.870  cpu_op            aten::to
+         307.6      21.750  cpu_op            aten::_to_copy
+         314.3       3.170  cpu_op            aten::empty_strided
+         318.4      10.590  cpu_op            aten::copy_
+         342.3     308.139  cpu_op            aten::item
+         343.3     306.779  cpu_op            aten::_local_scalar_dense
+         683.4      16.750  cpu_op            aten::mul
+         709.6      21.110  cpu_op            aten::index
+         712.1       2.210  cpu_op            aten::as_strided
+         715.4       1.650  cpu_op            aten::reshape
+         716.0       0.820  cpu_op            aten::view
+         737.1       1.990  cpu_op            aten::unsqueeze
+         738.4       0.380  cpu_op            aten::as_strided
+         740.5      23.000  cpu_op            aten::bmm
+         767.3       2.490  cpu_op            aten::squeeze
+         769.0       0.470  cpu_op            aten::as_strided
+         772.7       1.240  cpu_op            aten::unsqueeze
+         773.5       0.280  cpu_op            aten::as_strided
+         775.2      12.379  cpu_op            aten::mul
+         791.0       0.830  cpu_op            aten::view
+         794.1      18.010  cpu_op            aten::sum
+         801.2       0.370  cpu_op            aten::as_strided
+         817.2       0.350  cpu_op            aten::to
+         837.4       1.630  cpu_op            aten::reshape
+         838.2       0.640  cpu_op            aten::view
+         840.5     177.190  cpu_op            aten::to
+         841.7     175.700  cpu_op            aten::_to_copy
+         843.1       1.670  cpu_op            aten::empty_strided
+         845.7     171.150  cpu_op            aten::copy_
+        1021.8       0.260  cpu_op            aten::to
+        1024.7      11.610  cpu_op            aten::bincount
+        1025.6       4.340  cpu_op            aten::min
+        1026.6       1.290  cpu_op            aten::empty
+        1029.4       0.330  cpu_op            aten::fill_
+        1030.8       1.910  cpu_op            aten::max
+        1031.5       0.340  cpu_op            aten::empty
+        1032.5       0.070  cpu_op            aten::fill_
+        1033.7       2.340  cpu_op            aten::zeros
+        1034.6       0.390  cpu_op            aten::empty
+        1035.6       0.220  cpu_op            aten::zero_
+        1043.8       0.240  cpu_op            aten::resolve_conj
+        1044.8       0.090  cpu_op            aten::resolve_neg
+
+AIMC SUITABILITY──────────────────────────────────────────────────────────────────────────
+  Analog replaceable (matmuls):        125.1μs  (14.0% of GPU window)
+  Remaining digital overhead:          765.8μs  (86.0% of GPU window)
+  Theoretical max AIMC speedup:         1.16x  (if matmuls were instant)
+  Sync barrier cost:                     0.0μs  ← eliminated on AIMC
+  Effective AIMC speedup (no sync):     1.16x
+==========================================================================================
+

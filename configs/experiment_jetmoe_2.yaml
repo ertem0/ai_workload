@@ -1,0 +1,19 @@
+experiment_name: "jetmoe_profile_2"
+model:
+  id: "jetmoe/jetmoe-8b"
+  precision: "fp16"
+  device: "cuda"
+
+dataset: 
+  - "Write "
+  
+inference:
+  use_chat_template: false
+  max_input_tokens: null   # null = no truncation
+  max_new_tokens: 4
+
+metrics:
+  calculate_expert_routing: true
+
+profiler:
+  enabled: true  

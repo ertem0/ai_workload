@@ -2,6 +2,7 @@ PYTHON ?= .venv/bin/python
 
 WORKLOAD ?=
 WORKLOADS ?= $(WORKLOAD)
+PROFILER_TRACE ?=
 EXPERT_TRACE ?=
 JSON_OUTPUT ?=
 OUTPUT_DIR ?=
@@ -13,7 +14,7 @@ COMPACT_FLAG := $(if $(filter 1 true yes,$(COMPACT)),--compact,)
 
 help:
 	@echo "Available targets:"
-	@echo "  make workload_metrics WORKLOAD=results/.../workload_trace.pkl [OUTPUT_DIR=metrics]"
+	@echo "  make workload_metrics WORKLOAD=results/.../workload_trace.pkl [PROFILER_TRACE=results/.../inference_trace.json] [OUTPUT_DIR=metrics]"
 	@echo "  make workload_metrics WORKLOADS=\"trace1.pkl trace2.pkl\" [OUTPUT_DIR=metrics]"
 	@echo "  make expert_metrics EXPERT_TRACE=results/.../expert_traces_raw.pkl [OUTPUT_DIR=results/...]"
 	@echo "  make trace_to_json WORKLOAD=results/.../workload_trace.pkl [JSON_OUTPUT=trace.json] [COMPACT=1]"
@@ -24,7 +25,7 @@ workload_metrics:
 		echo "   or: make workload_metrics WORKLOADS=\"trace1.pkl trace2.pkl\""; \
 		exit 2; \
 	fi
-	$(PYTHON) -m src.metrics.workload_metrics $(WORKLOADS) $(if $(OUTPUT_DIR),--output-dir $(OUTPUT_DIR),)
+	$(PYTHON) -m src.metrics.workload_metrics $(WORKLOADS) $(if $(OUTPUT_DIR),--output-dir $(OUTPUT_DIR),) $(if $(PROFILER_TRACE),--profiler-trace $(PROFILER_TRACE),)
 
 expert_metrics:
 	@if [ -z "$(strip $(EXPERT_TRACE))" ]; then \

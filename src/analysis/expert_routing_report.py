@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Any
 
@@ -346,6 +347,206 @@ def _build_expert_routing_statistics(routing_trace: dict[int, list[RoutingTraceR
     }
 
 
+def _load_compact_routing_stats(path: Path, top_k: int | None = None) -> dict[str, Any]:
+    """
+    Aggregate statistics from a compact JSONL routing trace produced by
+    SmallExpertRoutingTracker.  Returns the same dict shape as
+    _build_expert_routing_statistics so the rest of the report code is
+    format-agnostic.  Layer transition stats and flat_records are not
+    available in this format and are returned as empty lists.
+    """
+    all_lines = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    metadata: dict[str, Any] = {}
+    records = []
+    for line in all_lines:
+        if line.get("_type") == "metadata":
+            metadata = {k: v for k, v in line.items() if k != "_type"}
+        else:
+            records.append(line)
+
+    # Discover layer names and num_routed_experts
+    # Prefer the value embedded in metadata; fall back to inferring from data.
+    layer_name_set: set[str] = set()
+    num_routed_experts = int(metadata.get("num_routed_experts", 0))
+    for record in records:
+        for phase in ("prefill", "decode"):
+            for key, layer_data in record.get(phase, {}).items():
+                if key == "tokens" or not isinstance(layer_data, dict):
+                    continue
+                layer_name_set.add(key)
+                if num_routed_experts == 0 and "expert_zeros" in layer_data:
+                    num_routed_experts = (
+                        len(layer_data.get("experts", {})) + layer_data["expert_zeros"]
+                    )
+
+    layer_names = sorted(layer_name_set, key=_layer_sort_key)
+    if num_routed_experts == 0 or not layer_names:
+        return {
+            "num_routed_experts": 0,
+            "results": [],
+            "layer_names": [],
+            "layer_expert_matrix": torch.zeros((0, 0), dtype=torch.long),
+            "top_experts": [],
+            "top_pairs": [],
+            "layer_transition_stats": [],
+            "total_routing_events": 0,
+        }
+
+    n = num_routed_experts
+    layer_counts = {ln: torch.zeros(n, dtype=torch.long) for ln in layer_names}
+    layer_pair_counts = {ln: torch.zeros((n, n), dtype=torch.long) for ln in layer_names}
+
+    for record in records:
+        for phase in ("prefill", "decode"):
+            phase_data = record.get(phase, {})
+            for layer_name in layer_names:
+                layer_data = phase_data.get(layer_name)
+                if not layer_data:
+                    continue
+                for eid_str, count in layer_data.get("experts", {}).items():
+                    eid = int(eid_str)
+                    if 0 <= eid < n:
+                        layer_counts[layer_name][eid] += count
+                for pair_key, count in layer_data.get("expert_pairs", {}).items():
+                    i_str, j_str = pair_key.split(",")
+                    i, j = int(i_str), int(j_str)
+                    if 0 <= i < n and 0 <= j < n:
+                        layer_pair_counts[layer_name][i, j] += count
+                        layer_pair_counts[layer_name][j, i] += count
+
+    results: list[dict[str, Any]] = []
+    for layer_name in layer_names:
+        counts = layer_counts[layer_name].to(torch.float64)
+        mean_count = float(counts.mean().item()) if counts.numel() > 0 else 0.0
+        std_count = float(counts.std(unbiased=False).item()) if counts.numel() > 0 else 0.0
+        workload_skewness = float(std_count / mean_count) if mean_count > 0 else float("inf")
+        results.append({
+            "layer_name": layer_name,
+            "counts": layer_counts[layer_name],
+            "workload_skewness": workload_skewness,
+        })
+
+    layer_expert_matrix = torch.stack(
+        [layer_counts[ln] for ln in layer_names], dim=0
+    )
+
+    layer_name_to_id = {
+        ln: (int(ln.split()[-1]) if ln.startswith("layer ") else -1)
+        for ln in layer_names
+    }
+    effective_top_k = (
+        top_k
+        if top_k is not None
+        else int(metadata.get("configured_top_k", 1))
+    )
+    layer_event_counts = {
+        ln: max(int(layer_counts[ln].sum().item()) // max(effective_top_k, 1), 0)
+        for ln in layer_names
+    }
+    total_routing_events = sum(layer_event_counts.values())
+
+    top_pairs: list[dict[str, Any]] = []
+    for expert_i in range(n):
+        for expert_j in range(expert_i + 1, n):
+            global_count = int(sum(
+                layer_pair_counts[ln][expert_i, expert_j].item()
+                for ln in layer_names
+            ))
+            if global_count == 0:
+                continue
+            dominant_layer_name = ""
+            dominant_layer_id = -1
+            dominant_layer_count = 0
+            dominant_layer_events = 0
+            for ln in layer_names:
+                lc = int(layer_pair_counts[ln][expert_i, expert_j].item())
+                if lc > dominant_layer_count:
+                    dominant_layer_count = lc
+                    dominant_layer_name = ln
+                    dominant_layer_id = layer_name_to_id.get(ln, -1)
+                    dominant_layer_events = layer_event_counts.get(ln, 0)
+            top_pairs.append({
+                "expert_i": expert_i,
+                "expert_j": expert_j,
+                "count": global_count,
+                "probability": (
+                    float(dominant_layer_count / dominant_layer_events)
+                    if dominant_layer_events > 0
+                    else 0.0
+                ),
+                "dominant_layer_name": dominant_layer_name,
+                "dominant_layer_id": dominant_layer_id,
+                "dominant_layer_count": dominant_layer_count,
+                "dominant_layer_events": dominant_layer_events,
+            })
+
+    top_pairs.sort(key=lambda item: (
+        -item["probability"], -item["dominant_layer_count"],
+        item["dominant_layer_id"], item["expert_i"], item["expert_j"],
+    ))
+
+    top_experts: list[dict[str, Any]] = []
+    for expert_id in range(n):
+        dominant_layer_name = ""
+        dominant_layer_id = -1
+        dominant_layer_count = 0
+        dominant_layer_events = 0
+        dominant_layer_total_assignments = 0
+        for ln in layer_names:
+            expert_count = int(layer_counts[ln][expert_id].item())
+            if expert_count <= 0:
+                continue
+            lid = layer_name_to_id.get(ln, -1)
+            if (
+                expert_count > dominant_layer_count
+                or (expert_count == dominant_layer_count and dominant_layer_id >= 0 and lid < dominant_layer_id)
+                or (expert_count == dominant_layer_count and dominant_layer_id < 0)
+            ):
+                dominant_layer_name = ln
+                dominant_layer_id = lid
+                dominant_layer_count = expert_count
+                dominant_layer_events = layer_event_counts.get(ln, 0)
+                dominant_layer_total_assignments = int(layer_counts[ln].sum().item())
+        if dominant_layer_count == 0:
+            continue
+        n_routing_steps = max(dominant_layer_total_assignments // max(top_k, 1), 1)
+        top_experts.append({
+            "expert_id": expert_id,
+            "probability": (
+                float(dominant_layer_count / n_routing_steps)
+                if n_routing_steps > 0
+                else 0.0
+            ),
+            "dominant_layer_name": dominant_layer_name,
+            "dominant_layer_id": dominant_layer_id,
+            "dominant_layer_count": dominant_layer_count,
+            "dominant_layer_events": dominant_layer_events,
+            "dominant_layer_total_assignments": dominant_layer_total_assignments,
+            "dominant_layer_routing_steps": n_routing_steps,
+        })
+
+    top_experts.sort(key=lambda item: (
+        -item["probability"], -item["dominant_layer_count"],
+        item["dominant_layer_id"], item["expert_id"],
+    ))
+
+    return {
+        "num_routed_experts": n,
+        "results": results,
+        "layer_names": layer_names,
+        "layer_expert_matrix": layer_expert_matrix,
+        "top_experts": top_experts,
+        "top_pairs": top_pairs,
+        "layer_transition_stats": [],
+        "total_routing_events": total_routing_events,
+        "metadata": metadata,
+    }
+
+
 def _print_pair_correlation_summary(
     *,
     top_pairs: list[dict[str, Any]],
@@ -451,9 +652,27 @@ def run_expert_routing_analysis(
 ) -> None:
     trace_path = trace_path.resolve()
     analysis_output_dir = output_dir.resolve() if output_dir is not None else trace_path.parent.resolve()
-    payload = load_routing_trace(trace_path)
-    routing_trace = payload["routing_trace"]
-    metadata = payload["metadata"]
+
+    is_compact = trace_path.suffix == ".jsonl"
+    flat_records: list[Any] = []
+
+    if is_compact:
+        # top_k=None lets the loader derive it from the embedded metadata header.
+        # A CLI-supplied configured_top_k overrides the embedded value.
+        stats = _load_compact_routing_stats(trace_path, top_k=configured_top_k)
+        metadata: dict[str, Any] = stats.get("metadata", {})
+    else:
+        payload = load_routing_trace(trace_path)
+        routing_trace = payload["routing_trace"]
+        metadata = payload["metadata"]
+        flat_records = [
+            record
+            for prompt_records in routing_trace.values()
+            for record in prompt_records
+        ]
+        effective_top_k = configured_top_k if configured_top_k is not None else int(metadata.get("configured_top_k", 0))
+        stats = _build_expert_routing_statistics(routing_trace, top_k=effective_top_k)
+
     model_id = model_id or metadata.get("model_id", "unknown")
     configured_top_k = (
         configured_top_k
@@ -469,7 +688,8 @@ def run_expert_routing_analysis(
     prompts_processed = (
         prompts_processed
         if prompts_processed is not None
-        else int(metadata.get("prompts_processed", len(routing_trace)))
+        else int(metadata.get("prompts_processed" if not is_compact else "prompts_total",
+                              0 if is_compact else len(routing_trace)))
     )
     input_token_count = (
         input_token_count
@@ -481,7 +701,6 @@ def run_expert_routing_analysis(
         if output_token_count is not None
         else int(metadata.get("output_token_count", 0))
     )
-    stats = _build_expert_routing_statistics(routing_trace, top_k=configured_top_k)
     results = stats["results"]
 
     if not results:
@@ -508,12 +727,10 @@ def run_expert_routing_analysis(
     print("=" * 96)
     print("Expert-Centric Routing Report")
     print("=" * 96)
-    print(f"Loaded raw routing trace      : {trace_path}")
-    flat_records = [
-        record
-        for prompt_records in routing_trace.values()
-        for record in prompt_records
-    ]
+    print(f"Loaded routing trace          : {trace_path}")
+    if is_compact:
+        print("Trace format                  : compact JSONL (layer transitions, spatial")
+        print("                                heatmaps, and load/entropy plots unavailable)")
     heatmap_path = save_expert_heatmap_plot(
         layer_expert_matrix=stats["layer_expert_matrix"],
         layer_names=stats["layer_names"],
@@ -525,45 +742,46 @@ def run_expert_routing_analysis(
     if heatmap_path is not None:
         print(f"Saved expert heatmap plot     : {heatmap_path}")
         print("Heatmap axes                  : y=layer, x=expert id")
-    spatial_heatmap_paths = generate_individual_spatial_heatmaps(
-        flat_records,
-        analysis_output_dir,
-        stats["num_routed_experts"],
-    )
-    if spatial_heatmap_paths:
-        print(
-            f"Saved spatial heatmaps        : {len(spatial_heatmap_paths)} files in "
-            f"{(analysis_output_dir / 'spatial_correlation_heatmaps').resolve()}"
+    if not is_compact:
+        spatial_heatmap_paths = generate_individual_spatial_heatmaps(
+            flat_records,
+            analysis_output_dir,
+            stats["num_routed_experts"],
         )
-    transition_heatmap_paths = generate_layer_transition_heatmaps(
-        stats["layer_transition_stats"],
-        analysis_output_dir,
-        stats["num_routed_experts"],
-    )
-    if transition_heatmap_paths:
-        print(
-            f"Saved transition heatmaps     : {len(transition_heatmap_paths)} files in "
-            f"{(analysis_output_dir / 'layer_transition_heatmaps').resolve()}"
+        if spatial_heatmap_paths:
+            print(
+                f"Saved spatial heatmaps        : {len(spatial_heatmap_paths)} files in "
+                f"{(analysis_output_dir / 'spatial_correlation_heatmaps').resolve()}"
+            )
+        transition_heatmap_paths = generate_layer_transition_heatmaps(
+            stats["layer_transition_stats"],
+            analysis_output_dir,
+            stats["num_routed_experts"],
         )
-        print("Transition heatmap axes       : y=layer n expert id, x=layer n+1 expert id")
-    transition_umap_paths = plot_transition_umap(
-        stats["layer_transition_stats"],
-        analysis_output_dir,
-        stats["num_routed_experts"],
-    )
-    if transition_umap_paths:
-        print(
-            f"Saved transition UMAP plots   : {len(transition_umap_paths)} files in "
-            f"{(analysis_output_dir / 'layer_transition_umap').resolve()}"
+        if transition_heatmap_paths:
+            print(
+                f"Saved transition heatmaps     : {len(transition_heatmap_paths)} files in "
+                f"{(analysis_output_dir / 'layer_transition_heatmaps').resolve()}"
+            )
+            print("Transition heatmap axes       : y=layer n expert id, x=layer n+1 expert id")
+        transition_umap_paths = plot_transition_umap(
+            stats["layer_transition_stats"],
+            analysis_output_dir,
+            stats["num_routed_experts"],
         )
-    load_entropy_path = plot_expert_load_and_entropy(
-        flat_records,
-        analysis_output_dir,
-        stats["num_routed_experts"],
-        top_k=configured_top_k,
-    )
-    if load_entropy_path is not None:
-        print(f"Saved load/entropy plot       : {load_entropy_path}")
+        if transition_umap_paths:
+            print(
+                f"Saved transition UMAP plots   : {len(transition_umap_paths)} files in "
+                f"{(analysis_output_dir / 'layer_transition_umap').resolve()}"
+            )
+        load_entropy_path = plot_expert_load_and_entropy(
+            flat_records,
+            analysis_output_dir,
+            stats["num_routed_experts"],
+            top_k=configured_top_k,
+        )
+        if load_entropy_path is not None:
+            print(f"Saved load/entropy plot       : {load_entropy_path}")
     zipf_path = plot_expert_zipf(
         layer_expert_matrix=stats["layer_expert_matrix"],
         layer_names=stats["layer_names"],
@@ -589,9 +807,17 @@ def run_expert_routing_analysis(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Calculate expert routing metrics from a saved expert_traces_raw.pkl file."
+        description=(
+            "Calculate expert routing metrics from a saved routing trace. "
+            "Accepts expert_traces_raw.pkl (full detail) or "
+            "expert_routing_compact.jsonl (compact format — CWS, heatmaps, and "
+            "pair/expert summaries only; layer transitions and per-token plots unavailable)."
+        )
     )
-    parser.add_argument("trace_path", help="Path to expert_traces_raw.pkl.")
+    parser.add_argument(
+        "trace_path",
+        help="Path to expert_traces_raw.pkl or expert_routing_compact.jsonl.",
+    )
     parser.add_argument("--model-id", help="Model identifier for reporting.")
     parser.add_argument("--configured-top-k", type=int)
     parser.add_argument("--original-top-k", type=int)

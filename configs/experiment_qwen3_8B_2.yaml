@@ -1,0 +1,20 @@
+experiment_name: Qwen3_8B
+
+model:
+  id: "Qwen/Qwen3-8B"
+  precision: "fp16"
+  device: "cuda"
+
+dataset: 
+  - "Write "
+  
+inference:
+  use_chat_template: false
+  max_input_tokens: null   # null = no truncation
+  max_new_tokens: 4
+
+metrics:
+  calculate_expert_routing: false
+
+profiler:
+  enabled: true  

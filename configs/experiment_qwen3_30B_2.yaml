@@ -1,0 +1,21 @@
+experiment_name: Qwen3_30B
+
+model:
+  id: "Qwen/Qwen3-30B-A3B"
+  precision: "fp16"
+  quantization: "4bit"
+  device: "auto"
+
+dataset: 
+  - "Write "
+  
+inference:
+  use_chat_template: false
+  max_input_tokens: null   # null = no truncation
+  max_new_tokens: 4
+
+metrics:
+  calculate_expert_routing: true
+
+profiler:
+  enabled: true  

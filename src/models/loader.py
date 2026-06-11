@@ -7,6 +7,7 @@ import torch
 try:
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
     from transformers.cache_utils import Cache, DynamicCache
+    from transformers.utils import import_utils
 except ImportError as exc:  # pragma: no cover - runtime dependency guard
     raise SystemExit(
         "Missing dependency: transformers\n"
@@ -121,6 +122,9 @@ def _patch_transformers_cache_compatibility() -> None:
     `Cache.get_max_length()`, while newer Transformers releases expose
     `get_seq_length()` and `get_max_cache_shape()` instead.
     """
+
+    if not hasattr(import_utils, "is_torch_fx_available"):
+        import_utils.is_torch_fx_available = lambda: hasattr(torch, "fx")  # type: ignore[attr-defined]
 
     if not hasattr(Cache, "seen_tokens"):
         Cache.seen_tokens = property(lambda self: self.get_seq_length())  # type: ignore[attr-defined]
@@ -244,11 +248,15 @@ def load_model_and_tokenizer(config_dict: dict[str, Any]) -> tuple[Any, Any, dic
         f"Loading model weights with device_map={execution_device} and dtype={model_dtype} "
         f"(prefer_safetensors={prefer_safetensors})."
     )
+    # bitsandbytes quantization requires device_map="auto" to manage quantized layer placement
+    effective_device_map = "auto" if quantization else (
+        execution_device if execution_device == "auto" else {"": execution_device}
+    )
     load_kwargs: dict[str, Any] = {
         "config": config,
         "trust_remote_code": True,
-        "dtype": model_dtype,
-        "device_map": execution_device if execution_device == "auto" else {"": execution_device},
+        "torch_dtype": model_dtype,
+        "device_map": effective_device_map,
         "low_cpu_mem_usage": True,
         "use_safetensors": prefer_safetensors,
     }

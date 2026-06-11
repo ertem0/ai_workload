@@ -12,6 +12,11 @@ def expert_routing_enabled(config_dict: dict[str, Any]) -> bool:
     return bool(metrics_cfg.get("calculate_expert_routing", False))
 
 
+def small_expert_routing_enabled(config_dict: dict[str, Any]) -> bool:
+    metrics_cfg = config_dict["metrics"]
+    return bool(metrics_cfg.get("calculate_small_expert_routing", False))
+
+
 def run_enabled_post_analysis(
     config_dict: dict[str, Any],
     run_summary: dict[str, Any],

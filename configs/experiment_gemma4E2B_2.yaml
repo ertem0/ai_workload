@@ -1,0 +1,20 @@
+experiment_name: "gemma4_E2B_2"
+model:
+  id: "google/gemma-4-E2B-it"
+  precision: "bf16"
+  prefer_safetensors: true # Fail fast on repos that only publish legacy .bin weights.
+  device: "cuda"
+
+dataset: 
+  - "Write "
+  
+inference:
+  use_chat_template: false
+  max_input_tokens: null   # null = no truncation
+  max_new_tokens: 4
+
+metrics:
+  calculate_expert_routing: false
+
+profiler:
+  enabled: true  

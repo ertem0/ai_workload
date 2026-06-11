@@ -130,6 +130,8 @@ DEFAULT_PLOT_CONFIG: dict[str, Any] = {
     "dpi":                      300,
     "min_viable_batch":         4,          # tokens/expert below which AIMC efficiency degrades
     "max_gantt_layers":         16,         # layers shown in Gantt chart (None = all)
+    "max_operation_gantt_lanes": 48,         # phase/layer lanes shown in op Gantt
+    "max_profiler_gantt_lanes": 80,         # lanes shown in profiler Gantt
     "max_bar_layers":           16,         # layers shown in grouped bar chart
     # AIMC bubble chart (plot_numels_flops_per_step)
     "aimc_ridge_point":         21.8,       # FLOP/numel ridge (peak_compute / peak_bw)
@@ -1093,6 +1095,205 @@ def plot_tile_timeline(data: dict, cfg: dict, out: Path) -> None:
     _save(fig, "tile_timeline", out, cfg)
 
 
+def plot_operation_gantt(data: dict, cfg: dict, out: Path) -> None:
+    """Gantt-style view of workload operations by phase and layer."""
+
+    lanes = data.get("lanes", {})
+    if not lanes:
+        print("  [skip] operation_gantt: no data"); return
+
+    lane_names = sorted(lanes.keys())
+    max_lanes = cfg.get("max_operation_gantt_lanes", 48)
+    if max_lanes is not None:
+        lane_names = lane_names[:max_lanes]
+
+    role_colors = {
+        "attention":  OP_COLOR["attention"],
+        "expert_ffn": OP_COLOR["expert_ffn"],
+        "gate":       OP_COLOR["gate"],
+        "lm_head":    OP_COLOR["lm_head"],
+        "other":      OP_COLOR["other"],
+    }
+
+    total_bars = sum(len(lanes[name]) for name in lane_names)
+    if total_bars == 0:
+        print("  [skip] operation_gantt: no operations"); return
+
+    fig_h = min(24, max(6, 0.34 * len(lane_names) + 2.5))
+    fig, ax = plt.subplots(figsize=(14, fig_h))
+
+    bar_h = 0.68
+    y_positions = {name: idx for idx, name in enumerate(lane_names)}
+    max_end = 0.0
+
+    for lane_name in lane_names:
+        y = y_positions[lane_name]
+        for op in lanes[lane_name]:
+            start = float(op.get("start", 0.0))
+            end = float(op.get("end", start))
+            duration = max(end - start, 0.0)
+            role = op.get("role", "other")
+            color = role_colors.get(role, OP_COLOR["other"])
+            max_end = max(max_end, end)
+            ax.barh(
+                y,
+                duration,
+                left=start,
+                height=bar_h,
+                color=color,
+                alpha=0.86,
+                edgecolor="white",
+                linewidth=0.25,
+            )
+
+    ax.set_yticks([y_positions[name] for name in lane_names])
+    ax.set_yticklabels(lane_names, fontsize=8)
+    unit = data.get("time_unit", "relative units")
+    source = data.get("duration_source", "trace")
+    xlabel = "Time (ms)" if unit == "milliseconds" else "Relative compute time (FLOP-proportional)"
+    ax.set_xlabel(xlabel, fontsize=11)
+    ax.set_xlim(0, max_end * 1.01 if max_end > 0 else 1.0)
+    ax.invert_yaxis()
+    ax.grid(axis="x", alpha=0.25)
+
+    plotted = int(data.get("plotted_ops", total_bars))
+    total = int(data.get("total_ops", plotted))
+    suffix = "" if plotted == total else f" (first {plotted} of {total} ops)"
+    ax.set_title(f"Operation Gantt by Phase and Layer{suffix}", fontsize=13)
+    ax.text(
+        0.995,
+        1.01,
+        f"duration source: {source}",
+        transform=ax.transAxes,
+        ha="right",
+        va="bottom",
+        fontsize=8,
+        color=CB["gray"],
+    )
+
+    handles = [
+        mpatches.Patch(color=color, label=label)
+        for label, color in (
+            ("Attention", role_colors["attention"]),
+            ("Expert FFN", role_colors["expert_ffn"]),
+            ("Gate / Router", role_colors["gate"]),
+            ("LM head", role_colors["lm_head"]),
+            ("Other", role_colors["other"]),
+        )
+    ]
+    ax.legend(handles=handles, loc="lower right", fontsize=8, ncol=3)
+
+    _save(fig, "operation_gantt", out, cfg)
+
+
+def plot_profiler_gantt(data: dict, cfg: dict, out: Path) -> None:
+    """Real-time Gantt from PyTorch Chrome trace user annotations."""
+
+    lanes = data.get("lanes", {})
+    if not lanes:
+        print("  [skip] profiler_gantt: no data"); return
+
+    def lane_sort_key(name: str) -> tuple[int, int, str]:
+        thread_m = re.search(r"(?:tid|thread)\s+(\d+)", name)
+        if thread_m:
+            return (0, int(thread_m.group(1)), name)
+        layer_m = re.search(r"layer (\d+)", name)
+        if layer_m:
+            return (1, int(layer_m.group(1)), name)
+        if name.startswith("run:"):
+            return (0, -1, name)
+        return (2, 999999, name)
+
+    lane_names = sorted(lanes.keys(), key=lane_sort_key)
+    max_lanes = cfg.get("max_profiler_gantt_lanes", 80)
+    if max_lanes is not None:
+        lane_names = lane_names[:max_lanes]
+
+    role_colors = {
+        "forward_pass":    CB["black"],
+        "generation":      CB["blue"],
+        "tokenize_prompt": CB["gray"],
+        "attention":       OP_COLOR["attention"],
+        "expert_ffn":      OP_COLOR["expert_ffn"],
+        "gate":            OP_COLOR["gate"],
+        "norm":            CB["yellow"],
+        "embedding":       CB["green"],
+        "lm_head":         OP_COLOR["lm_head"],
+        "other":           OP_COLOR["other"],
+    }
+
+    total_bars = sum(len(lanes[name]) for name in lane_names)
+    if total_bars == 0:
+        print("  [skip] profiler_gantt: no events"); return
+
+    lane_mode = data.get("lane_mode", "role")
+    if lane_mode == "thread":
+        bar_height = 0.14
+        fig_h = min(14, max(3.0, 0.22 * len(lane_names) + 2.2))
+    else:
+        bar_height = 0.66
+        fig_h = min(28, max(7, 0.30 * len(lane_names) + 2.5))
+    fig, ax = plt.subplots(figsize=(15, fig_h))
+    y_positions = {name: idx for idx, name in enumerate(lane_names)}
+    max_end = 0.0
+
+    for lane_name in lane_names:
+        y = y_positions[lane_name]
+        lane_events = sorted(
+            lanes[lane_name],
+            key=lambda event: (
+                float(event.get("start", 0.0)),
+                -float(event.get("duration", 0.0)),
+            ),
+        )
+        for event in lane_events:
+            start = float(event.get("start", 0.0))
+            end = float(event.get("end", start))
+            duration = max(end - start, 0.0)
+            role = event.get("role", "other")
+            max_end = max(max_end, end)
+            ax.barh(
+                y,
+                duration,
+                left=start,
+                height=bar_height,
+                color=role_colors.get(role, OP_COLOR["other"]),
+                alpha=0.82,
+                edgecolor="white",
+                linewidth=0.2,
+            )
+
+    ax.set_yticks([y_positions[name] for name in lane_names])
+    ax.set_yticklabels(lane_names, fontsize=7.5)
+    ax.set_xlabel("Profiler time (ms)", fontsize=11)
+    ax.set_xlim(0, max_end * 1.01 if max_end > 0 else 1.0)
+    ax.invert_yaxis()
+    ax.grid(axis="x", alpha=0.25)
+
+    plotted = int(data.get("plotted_events", total_bars))
+    total = int(data.get("total_events", plotted))
+    suffix = "" if plotted == total else f" (first {plotted} of {total} events)"
+    lane_label = " by thread" if lane_mode == "thread" else ""
+    ax.set_title(f"PyTorch Profiler Gantt{lane_label}{suffix}", fontsize=13)
+
+    handles = [
+        mpatches.Patch(color=color, label=label)
+        for label, color in (
+            ("Forward pass", role_colors["forward_pass"]),
+            ("Generation", role_colors["generation"]),
+            ("Attention", role_colors["attention"]),
+            ("Expert FFN", role_colors["expert_ffn"]),
+            ("Gate / Router", role_colors["gate"]),
+            ("Norm", role_colors["norm"]),
+            ("Embedding / LM head", role_colors["embedding"]),
+            ("Other", role_colors["other"]),
+        )
+    ]
+    ax.legend(handles=handles, loc="lower right", fontsize=8, ncol=4)
+
+    _save(fig, "profiler_gantt", out, cfg)
+
+
 # ─── Plot 9 — Precision Sensitivity ──────────────────────────────────────────
 
 _BITS = {"fp16": 16, "int8": 8, "int4": 4}
@@ -1311,6 +1512,9 @@ def plot_summary_dashboard(all_data: dict[str, dict], cfg: dict, out: Path) -> N
 
 _PLOT_REGISTRY = [
     ("roofline",                   "aimc_candidates",          plot_aimc_candidates),
+    ("operation_gantt",            "operation_gantt",          plot_operation_gantt),
+    ("profiler_gantt",             "profiler_gantt",           plot_profiler_gantt),
+    ("tile_timeline",              "tile_timeline",            plot_tile_timeline),
 ]
 
 
@@ -1374,6 +1578,12 @@ def _cli() -> None:
     p.add_argument("--max-gantt-layers", type=int, default=16,
                    metavar="N",
                    help="Max layers shown in Gantt chart (0 = all).")
+    p.add_argument("--max-operation-gantt-lanes", type=int, default=48,
+                   metavar="N",
+                   help="Max phase/layer lanes shown in operation Gantt chart (0 = all).")
+    p.add_argument("--max-profiler-gantt-lanes", type=int, default=80,
+                   metavar="N",
+                   help="Max lanes shown in PyTorch profiler Gantt chart (0 = all).")
     p.add_argument("--max-bar-layers", type=int, default=16,
                    metavar="N",
                    help="Max layers in load-imbalance bar chart.")
@@ -1387,6 +1597,8 @@ def _cli() -> None:
             "dpi":              args.dpi,
             "min_viable_batch": args.min_viable_batch,
             "max_gantt_layers": args.max_gantt_layers or None,
+            "max_operation_gantt_lanes": args.max_operation_gantt_lanes or None,
+            "max_profiler_gantt_lanes": args.max_profiler_gantt_lanes or None,
             "max_bar_layers":   args.max_bar_layers,
         },
     )

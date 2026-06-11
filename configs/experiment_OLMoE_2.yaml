@@ -1,0 +1,23 @@
+experiment_name: "OLMoE_profile_2"
+model:
+  id: "allenai/OLMoE-1B-7B-0924-Instruct"
+  prefer_safetensors: true # Fail fast on repos that only publish legacy .bin weights.
+  device: "cuda"
+
+dataset: 
+  - "Write "
+  
+inference:
+  use_chat_template: true
+  max_input_tokens: null   # null = no truncation
+  max_new_tokens: 4
+
+metrics:
+  calculate_small_expert_routing: true
+  calculate_expert_routing: false
+
+trace:
+  enabled: false
+
+profiler:
+  enabled: true  

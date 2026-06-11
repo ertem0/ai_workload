@@ -183,22 +183,23 @@ def export_workload_trace(
         else []
     )
 
+    metadata = {
+        "model_id":      model_info["model_id"],
+        "model_class":   model.__class__.__name__,
+        "torch_version": torch.__version__,
+        "transformers_version": transformers.__version__,
+        "device":        model_info.get("execution_device", "unknown"),
+        "precision":     config_dict.get("model", {}).get("precision"),
+        "created_at":    datetime.now(timezone.utc).isoformat(),
+        "n_sequences":   len(config_dict.get("dataset", [])),
+        "input_tokens":  total_input_tokens,
+        "output_tokens": total_output_tokens,
+        "top_k":         model_info.get("configured_top_k"),
+        "n_experts":     model_info.get("routed_experts"),
+    }
     payload = {
         "schema_version": TRACE_SCHEMA_VERSION,
-        "metadata": {
-            "model_id":      model_info["model_id"],
-            "model_class":   model.__class__.__name__,
-            "torch_version": torch.__version__,
-            "transformers_version": transformers.__version__,
-            "device":        model_info.get("execution_device", "unknown"),
-            "precision":     config_dict.get("model", {}).get("precision"),
-            "created_at":    datetime.now(timezone.utc).isoformat(),
-            "n_sequences":   len(config_dict.get("dataset", [])),
-            "input_tokens":  total_input_tokens,
-            "output_tokens": total_output_tokens,
-            "top_k":         model_info.get("configured_top_k"),
-            "n_experts":     model_info.get("routed_experts"),
-        },
+        "metadata": metadata,
         "weights": build_weights_inventory(model, crossbar_size),
         "ops":     flatten_ops(inferences),
     }

@@ -28,6 +28,3 @@ metrics:
 inference:
   use_chat_template: true
 
-inference:
-  max_input_tokens: null   # null = no truncation
-  max_new_tokens: 1028
